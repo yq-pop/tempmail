@@ -387,10 +387,14 @@ tempmail/
 │   ├── middleware/        # 鉴权、速率限制
 │   ├── model/            # 数据结构
 │   └── store/            # 数据库操作
-├── frontend/             # 静态 SPA（Nginx 托管）
-│   ├── index.html
-│   ├── css/style.css
-│   └── js/app.js
+├── frontend/             # 静态 SPA（Nginx 托管，零构建，原生 ES Modules + importmap）
+│   ├── index.html        # 外壳、importmap、预渲染脚本
+│   ├── css/style.css     # 设计系统：色温主题、12 列网格、组件、动效
+│   └── js/
+│       ├── main.js       # 入口：表头、路由表、会话恢复、校准开场
+│       ├── core/         # util / state / api / ui / router
+│       ├── fx/           # 着色器、光标、惯性滚动、磁吸按钮、乱码解码、X-Ray 等视觉与交互
+│       └── views/        # 落地页、仪表盘、收件箱、域名、API 文档、密钥、管理后台
 ├── nginx/                # Nginx 反向代理配置
 ├── postfix/              # Postfix 邮件接收
 ├── pgbouncer/            # PgBouncer 连接池配置

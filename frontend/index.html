@@ -1,30 +1,116 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-kelvin="2800">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>TempMail — 临时邮箱平台</title>
   <meta name="description" content="高并发临时邮箱服务，支持多域名、API 接入、团队隔离" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23222B28'/%3E%3Cpath d='M22 30h56a8 8 0 0 1 8 8v32a8 8 0 0 1-8 8H22a8 8 0 0 1-8-8V38a8 8 0 0 1 8-8Z' fill='none' stroke='white' stroke-width='7'/%3E%3Cpath d='M18 38l32 22 32-22' fill='none' stroke='white' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <meta name="theme-color" content="#0A0A08" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230A0A08'/%3E%3Cpath d='M8 20h48v28H8z' fill='none' stroke='%23F4F1EA' stroke-width='3'/%3E%3Cpath d='M8 22l24 17 24-17' fill='none' stroke='%23F4F1EA' stroke-width='3'/%3E%3Ccircle cx='50' cy='14' r='5' fill='%23FF3B14'/%3E%3C/svg%3E" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/style.css?v=202605300033" />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;900&family=Noto+Serif+SC:wght@600&family=Syne:wght@600;800&display=swap" rel="stylesheet" />
+
+  <!-- 首帧前确定色温，避免闪烁。2800K=碳黑，5600K=羊皮纸 -->
+  <script>
+    (function () {
+      try {
+        var k = localStorage.getItem('tm_kelvin');
+        if (k !== '2800' && k !== '5600') {
+          k = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? '5600' : '2800';
+        }
+        document.documentElement.setAttribute('data-kelvin', k);
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute('content', k === '5600' ? '#F3EFE6' : '#0A0A08');
+      } catch (e) {}
+      window.__tmErrors = [];
+      addEventListener('error', function (e) { window.__tmErrors.push(String(e.message) + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); });
+      addEventListener('unhandledrejection', function (e) { window.__tmErrors.push('promise: ' + String(e.reason && e.reason.message || e.reason)); });
+    })();
+  </script>
+
+  <link rel="stylesheet" href="/css/style.css?v=20261114a" />
+
+  <!-- 模块清单：缓存版本号集中在这里维护 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "core/util":    "/js/core/util.js?v=20261114a",
+      "core/state":   "/js/core/state.js?v=20261114a",
+      "core/api":     "/js/core/api.js?v=20261114a",
+      "core/ui":      "/js/core/ui.js?v=20261114a",
+      "core/router":  "/js/core/router.js?v=20261114a",
+      "fx/ticker":    "/js/fx/ticker.js?v=20261114a",
+      "fx/kelvin":    "/js/fx/kelvin.js?v=20261114a",
+      "fx/shader":    "/js/fx/shader.js?v=20261114a",
+      "fx/scope":     "/js/fx/scope.js?v=20261114a",
+      "fx/cursor":    "/js/fx/cursor.js?v=20261114a",
+      "fx/scroll":    "/js/fx/scroll.js?v=20261114a",
+      "fx/magnetic":  "/js/fx/magnetic.js?v=20261114a",
+      "fx/scramble":  "/js/fx/scramble.js?v=20261114a",
+      "fx/strings":   "/js/fx/strings.js?v=20261114a",
+      "fx/xray":      "/js/fx/xray.js?v=20261114a",
+      "fx/reveal":    "/js/fx/reveal.js?v=20261114a",
+      "fx/preloader": "/js/fx/preloader.js?v=20261114a",
+      "fx/index":     "/js/fx/index.js?v=20261114a",
+      "views/landing":        "/js/views/landing.js?v=20261114a",
+      "views/dashboard":      "/js/views/dashboard.js?v=20261114a",
+      "views/inbox":          "/js/views/inbox.js?v=20261114a",
+      "views/domains":        "/js/views/domains.js?v=20261114a",
+      "views/apidocs":        "/js/views/apidocs.js?v=20261114a",
+      "views/key":            "/js/views/key.js?v=20261114a",
+      "views/admin-accounts": "/js/views/admin-accounts.js?v=20261114a",
+      "views/admin-domains":  "/js/views/admin-domains.js?v=20261114a",
+      "views/admin-settings": "/js/views/admin-settings.js?v=20261114a",
+      "views/mx-console":     "/js/views/mx-console.js?v=20261114a"
+    }
+  }
+  </script>
 </head>
-<body>
+<body class="is-loading">
 
-<!-- ─── 应用根节点 ─────────────────────────────────── -->
-<div id="app"></div>
+  <!-- 开场标定序列 -->
+  <div id="pre" role="status" aria-live="polite" aria-label="系统自检">
+    <div class="pre-blinds" aria-hidden="true"></div>
+    <div class="pre-ui">
+      <div class="pre-top mono"><span>TEMPMAIL // CALIBRATION</span><span id="pre-clock">00:00:00.000</span></div>
+      <div class="pre-mid">
+        <ol class="pre-list mono" id="pre-list"></ol>
+        <canvas id="pre-wave" aria-hidden="true"></canvas>
+      </div>
+      <div class="pre-bot">
+        <div class="pre-count display"><span id="pre-n">000</span><i>%</i></div>
+        <div class="pre-bar" aria-hidden="true"><i id="pre-bar"></i></div>
+        <button type="button" id="pre-skip" class="mono">跳过 / SKIP ▸</button>
+      </div>
+    </div>
+  </div>
 
-<!-- ─── Toast 容器 ────────────────────────────────── -->
-<div id="toast-container" aria-live="polite"></div>
+  <!-- 光学着色器背景 / 12 栏参考线 / 胶片颗粒 -->
+  <canvas id="gl" aria-hidden="true"></canvas>
+  <div class="gridlines" aria-hidden="true"><div class="wrap"><div class="g12"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div>
+  <div class="grain" aria-hidden="true"></div>
 
-<a class="github-float" href="https://github.com/123nhh/tempmail" target="_blank" rel="noopener noreferrer" aria-label="GitHub 项目">
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M12 .5A11.5 11.5 0 0 0 8.36 22.9c.58.1.79-.25.79-.56v-2.02c-3.22.7-3.9-1.38-3.9-1.38-.53-1.35-1.3-1.7-1.3-1.7-1.06-.73.08-.72.08-.72 1.18.08 1.8 1.21 1.8 1.21 1.04 1.79 2.74 1.27 3.41.97.1-.76.41-1.27.74-1.56-2.57-.29-5.27-1.29-5.27-5.73 0-1.27.45-2.3 1.2-3.11-.12-.29-.52-1.47.11-3.07 0 0 .98-.31 3.2 1.19a11.1 11.1 0 0 1 5.82 0c2.22-1.5 3.2-1.19 3.2-1.19.63 1.6.23 2.78.11 3.07.75.81 1.2 1.84 1.2 3.11 0 4.45-2.7 5.43-5.28 5.72.42.36.79 1.07.79 2.16v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" />
-  </svg>
-</a>
+  <header id="hdr"></header>
+  <main id="app" tabindex="-1"></main>
 
-<script src="/js/app.js?v=202605300033"></script>
+  <!-- 视口边缘游标卡尺 -->
+  <aside id="vernier" aria-hidden="true">
+    <span class="v-cap v-cap-top mono">SCROLL</span>
+    <div class="v-track"><div class="v-jaw" id="v-jaw"><i class="v-notch"></i><span class="v-read mono" id="v-read">000.0‰</span></div></div>
+    <span class="v-speed mono" id="v-speed">+00.0 px/f</span>
+  </aside>
+
+  <!-- 双环光标 -->
+  <div id="cur-dot" aria-hidden="true"></div>
+  <div id="cur-ring" aria-hidden="true"><span></span></div>
+  <div id="xray-tip" class="mono" aria-hidden="true"></div>
+
+  <div id="panel-root"></div>
+  <div id="toasts" aria-live="polite"></div>
+
+  <script type="module" src="/js/main.js?v=20261114a"></script>
+  <noscript><p style="padding:2rem;font-family:monospace">TempMail 需要启用 JavaScript。</p></noscript>
 </body>
 </html>
