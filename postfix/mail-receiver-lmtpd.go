@@ -11,6 +11,7 @@
 // 启动参数（环境变量）：
 //
 //	API_URL          API 地址，默认 http://api:8080
+//	INTERNAL_TOKEN   调用 /internal/* 的共享密钥（必填，需与 API 一致）
 //	LMTPD_SOCKET     unix socket 路径，默认 /var/run/postfix/mail-receiver.sock
 //	LMTPD_BIND       可选 TCP 监听 host:port，调试用
 //	LMTPD_HOSTNAME   LMTP banner 中的主机名
@@ -43,6 +44,9 @@ const (
 	maxMessageBytes       = 25 << 20
 	maxBatchResponseBytes = 4 << 20
 	apiTimeout            = 15 * time.Second
+
+	// internalTokenHeader 与 API 侧 middleware.InternalTokenHeader 保持一致。
+	internalTokenHeader = "X-Internal-Token"
 )
 
 type deliverPayload struct {
@@ -74,10 +78,11 @@ type batchResponse struct {
 }
 
 type server struct {
-	hostname   string
-	apiURL     string
-	httpClient *http.Client
-	conns      atomic.Int64
+	hostname      string
+	apiURL        string
+	internalToken string
+	httpClient    *http.Client
+	conns         atomic.Int64
 }
 
 func main() {
@@ -85,11 +90,17 @@ func main() {
 
 	apiURL := strings.TrimRight(getenv("API_URL", "http://api:8080"), "/")
 	hostname := getenv("LMTPD_HOSTNAME", "mail-receiver.local")
+	internalToken := strings.TrimSpace(os.Getenv("INTERNAL_TOKEN"))
+	if internalToken == "" {
+		// 没有密钥时所有投递都会被 API 拒绝（401），邮件会一直堆在 Postfix 队列里，宁可启动时就明确失败。
+		log.Fatal("INTERNAL_TOKEN is required: set the same value as the api service")
+	}
 
 	srv := &server{
-		hostname:   hostname,
-		apiURL:     apiURL,
-		httpClient: newAPIHTTPClient(),
+		hostname:      hostname,
+		apiURL:        apiURL,
+		internalToken: internalToken,
+		httpClient:    newAPIHTTPClient(),
 	}
 
 	listeners := make([]net.Listener, 0, 2)
@@ -320,12 +331,29 @@ func (s *session) readData() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// headerDecoder 解码 RFC 2047 编码字（=?charset?B|Q?...?=），例如中文主题、
+// 带非 ASCII 显示名的发件人。标准库只内置 UTF-8 / US-ASCII / ISO-8859-1。
+var headerDecoder = new(mime.WordDecoder)
+
+// decodeHeader 返回解码后的头部文本。遇到不支持的字符集（如 GBK）时保留原文：
+// 宁可显示未解码的主题，也不能因为头部异常而丢信。
+func decodeHeader(v string) string {
+	if !strings.Contains(v, "=?") {
+		return v
+	}
+	decoded, err := headerDecoder.DecodeHeader(v)
+	if err != nil {
+		return v
+	}
+	return decoded
+}
+
 func (s *session) deliverAll(ctx context.Context, raw []byte) {
 	msg, parseErr := mail.ReadMessage(bytes.NewReader(raw))
 	var sender, subject, bodyText, bodyHTML string
 	if parseErr == nil {
-		sender = msg.Header.Get("From")
-		subject = msg.Header.Get("Subject")
+		sender = decodeHeader(msg.Header.Get("From"))
+		subject = decodeHeader(msg.Header.Get("Subject"))
 		bodyText, bodyHTML = extractBodies(msg)
 	}
 	if sender == "" {
@@ -421,16 +449,26 @@ func extractAddr(args string) string {
 	return rest
 }
 
+// newInternalRequest 构造调用 API 内部接口的 POST 请求，并带上共享密钥。
+func (s *server) newInternalRequest(ctx context.Context, path string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.apiURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(internalTokenHeader, s.internalToken)
+	return req, nil
+}
+
 func (s *server) deliver(ctx context.Context, payload deliverPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.apiURL+"/internal/deliver", bytes.NewReader(body))
+	req, err := s.newInternalRequest(ctx, "/internal/deliver", body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
 
 	res, err := s.httpClient.Do(req)
 	if err != nil {
@@ -450,11 +488,10 @@ func (s *server) deliverBatch(ctx context.Context, payload deliverBatchPayload) 
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.apiURL+"/internal/deliver-batch", bytes.NewReader(body))
+	req, err := s.newInternalRequest(ctx, "/internal/deliver-batch", body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
 
 	res, err := s.httpClient.Do(req)
 	if err != nil {

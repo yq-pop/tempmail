@@ -47,6 +47,7 @@ func main() {
 	concurrency := flag.Int("concurrency", 128, "concurrent workers")
 	rawBytes := flag.Int("raw-bytes", 1024, "raw message bytes per request")
 	batchSize := flag.Int("batch-size", 1, "recipients per request")
+	internalToken := flag.String("internal-token", os.Getenv("INTERNAL_TOKEN"), "shared secret for /internal/* (default: $INTERNAL_TOKEN)")
 	flag.Parse()
 	if *requests < 1 || *concurrency < 1 || *rawBytes < 1 || *batchSize < 1 {
 		fmt.Fprintln(os.Stderr, "all numeric flags must be positive")
@@ -74,7 +75,7 @@ func main() {
 			defer workers.Done()
 			for seq := range jobs {
 				begin := time.Now()
-				if err := deliver(client, *baseURL, *recipient, *rawBytes, *batchSize, seq); err != nil {
+				if err := deliver(client, *baseURL, *internalToken, *recipient, *rawBytes, *batchSize, seq); err != nil {
 					failures.Add(1)
 				} else {
 					successes.Add(int64(*batchSize))
@@ -114,7 +115,7 @@ func main() {
 	}
 }
 
-func deliver(client *http.Client, baseURL, recipient string, rawBytes, batchSize, seq int) error {
+func deliver(client *http.Client, baseURL, internalToken, recipient string, rawBytes, batchSize, seq int) error {
 	raw := fmt.Sprintf("Message-ID: <%d@bench>\r\n\r\n", seq)
 	if len(raw) < rawBytes {
 		raw += string(bytes.Repeat([]byte("x"), rawBytes-len(raw)))
@@ -144,6 +145,7 @@ func deliver(client *http.Client, baseURL, recipient string, rawBytes, batchSize
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", internalToken)
 	res, err := client.Do(req)
 	if err != nil {
 		return err

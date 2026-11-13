@@ -20,8 +20,27 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	// /internal 共享密钥的最短长度。
+	minInternalTokenLen = 16
+
+	// 公开接口（无需登录）按来源 IP 限流：整体宽松，登录和注册更严格。
+	publicRateLimit    = 600
+	publicRateWindow   = 60
+	keyLoginRateLimit  = 30
+	keyLoginRateWindow = 600
+	registerRateLimit  = 10
+	registerRateWindow = 3600
+	domainSubmitLimit  = 20
+	domainSubmitWindow = 3600
+	adminKeyLookupHint = "管理员 Key 可在数据库中查询：docker compose exec postgres psql -U tempmail -d tempmail -c \"SELECT api_key FROM accounts WHERE is_admin ORDER BY created_at LIMIT 1\""
+)
+
 func main() {
 	cfg := config.Load()
+	if len(cfg.InternalToken) < minInternalTokenLen {
+		log.Fatalf("INTERNAL_TOKEN 未设置或过短（至少 %d 个字符）。请在 .env 中设置，可用 `openssl rand -hex 32` 生成；api 与 postfix 容器必须使用相同的值", minInternalTokenLen)
+	}
 
 	// ==================== 连接数据库 ====================
 	ctx, stopBackground := context.WithCancel(context.Background())
@@ -65,6 +84,12 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
+	// 只信任内网反向代理（Nginx）转发的客户端 IP。Gin 默认信任所有来源，
+	// 攻击者可以伪造 X-Forwarded-For 绕过按 IP 的限流。
+	if err := r.SetTrustedProxies(middleware.PrivateProxyCIDRs); err != nil {
+		log.Fatalf("invalid trusted proxies: %v", err)
+	}
+
 	// CORS：允许前端跨域访问
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:  []string{"*"},
@@ -92,10 +117,12 @@ func main() {
 
 	// 公开路由（无需认证）
 	public := r.Group("/public")
+	// 公开接口无需登录，按来源 IP 限流；登录和注册再叠加更严格的限制，防止暴力尝试和批量刷号。
+	public.Use(middleware.IPRateLimit(rdb, "public", publicRateLimit, publicRateWindow))
 	{
 		public.GET("/settings", settingH.GetPublic)
-		public.POST("/key-login", accountH.KeyLogin)
-		public.POST("/register", registerH.Register)
+		public.POST("/key-login", middleware.IPRateLimit(rdb, "key-login", keyLoginRateLimit, keyLoginRateWindow), accountH.KeyLogin)
+		public.POST("/register", middleware.IPRateLimit(rdb, "register", registerRateLimit, registerRateWindow), registerH.Register)
 		public.GET("/stats", statsH.Get)
 		public.GET("/auth/linuxdo", linuxDOH.Start)
 		public.GET("/auth/linuxdo/callback", linuxDOH.Callback)
@@ -116,7 +143,7 @@ func main() {
 		api.GET("/domains/:id/status", domainH.GetStatus) // 任意用户可轮询域名状态
 		api.GET("/stats", statsH.Get)
 		// 任意已登录用户可提交域名进行 MX 自动验证
-		api.POST("/domains/submit", domainH.Submit)
+		api.POST("/domains/submit", middleware.AccountRateLimit(rdb, "domain-submit", domainSubmitLimit, domainSubmitWindow), domainH.Submit)
 
 		// 邮箱管理
 		api.POST("/mailboxes", mailboxH.Create)
@@ -149,8 +176,9 @@ func main() {
 		}
 	}
 
-	// 内部邮件投递接口（Postfix pipe 调用，仅内部网络）
-	internal := r.Group("/internal")
+	// 内部邮件投递接口（Postfix 的 LMTP 守护进程和域名同步脚本调用）。
+	// 必须携带 X-Internal-Token 共享密钥：该接口能向任意邮箱写入邮件并列出全部域名。
+	internal := r.Group("/internal", middleware.InternalAuth(cfg.InternalToken))
 	{
 		// 域名列表（供 Postfix 同步）
 		internal.GET("/domains", func(c *gin.Context) {
@@ -352,15 +380,17 @@ func main() {
 		if keyFile == "" {
 			keyFile = "/data/admin.key"
 		}
-		if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err == nil {
-			content := "# TempMail Admin API Key\n# Auto-generated on startup — keep this secret!\n\nADMIN_API_KEY=" + adminKey + "\n"
-			if err := os.WriteFile(keyFile, []byte(content), 0600); err != nil {
-				log.Printf("[adminkey] write file error: %v", err)
-			} else {
-				log.Printf("[OK] Admin API Key written to %s", keyFile)
-			}
+		// 管理员 Key 只写入文件，绝不打印到日志：日志常被集中采集或贴出来排障。
+		if err := os.MkdirAll(filepath.Dir(keyFile), 0700); err != nil {
+			log.Printf("[adminkey] create dir error: %v; %s", err, adminKeyLookupHint)
+			return
 		}
-		log.Printf("[ADMIN API KEY] %s", adminKey)
+		content := "# TempMail Admin API Key\n# Auto-generated on startup — keep this secret!\n\nADMIN_API_KEY=" + adminKey + "\n"
+		if err := os.WriteFile(keyFile, []byte(content), 0600); err != nil {
+			log.Printf("[adminkey] write file error: %v; %s", err, adminKeyLookupHint)
+			return
+		}
+		log.Printf("[OK] Admin API Key written to %s", keyFile)
 	}()
 
 	// ==================== 启动服务 ====================

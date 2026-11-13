@@ -18,7 +18,7 @@
 | 管理后台 | Web GUI 管理账户、域名、邮件、系统配置（含 SMTP Hostname）|
 | Dashboard 统计 | 实时展示邮箱数、邮件数、域名数、账户数 |
 | 公告系统 | 管理员可设置公告，用户登录后显示 |
-| 速率限制 | Redis 滑动窗口，默认 500 请求/60 秒/令牌 |
+| 速率限制 | Redis 固定窗口，按账号计数，默认 500 请求/60 秒；登录、注册、域名提交另有更严格的按 IP/账号限制 |
 | 连接池 | PgBouncer 事务模式，支持 2000 并发客户端 |
 
 ---
@@ -37,7 +37,8 @@
 git clone <repo-url>
 cd tempmail
 cp .env.example .env
-# 编辑 .env，填写 SMTP_SERVER_IP 和 SMTP_HOSTNAME
+# 编辑 .env，填写 SMTP_SERVER_IP、SMTP_HOSTNAME，并生成内部接口密钥（必填）：
+#   openssl rand -hex 32     # 把输出填到 INTERNAL_TOKEN=
 ```
 
 ### 2. 启动服务
@@ -57,15 +58,16 @@ cat data/admin.key
 # tm_admin_<自动生成的随机密钥>
 ```
 
-也可查看容器日志：
+出于安全考虑，管理员 Key **不会**再打印到容器日志。如果 `data/admin.key` 不可用，可以直接查询数据库：
 
 ```bash
-docker compose logs api | grep "ADMIN API KEY"
+docker compose exec postgres psql -U tempmail -d tempmail \
+  -c "SELECT api_key FROM accounts WHERE is_admin ORDER BY created_at LIMIT 1"
 ```
 
 ### 4. 访问 Web 界面
 
-浏览器打开 `http://<服务器IP>`，在登录页输入管理员 API Key 登录。
+浏览器打开 `http://<服务器IP>:8888`（默认端口 8888，可用 `FRONTEND_HOST_PORT` 修改；设为 80 则直接访问 `http://<服务器IP>`），在登录页输入管理员 API Key 登录。
 
 ---
 
@@ -92,18 +94,20 @@ docker compose logs api | grep "ADMIN API KEY"
 | `POSTFIX_SMTPD_CLIENT_CONNECTION_COUNT_LIMIT` | `200` | 单来源 IP 同时 SMTP 连接上限 |
 | `POSTFIX_SMTPD_CLIENT_CONNECTION_RATE_LIMIT` | `0` | 单来源建连速率；`0` 为关闭 |
 | `POSTFIX_LMTP_DESTINATION_CONCURRENCY_LIMIT` | `128` | Postfix 到 LMTP daemon 的投递并发 |
-| `API_RATE_LIMIT` | `500` | 每令牌每窗口期最大请求数 |
+| `API_RATE_LIMIT` | `500` | 每账号每窗口期最大请求数（固定窗口）|
 | `API_RATE_WINDOW` | `60` | 速率窗口（秒）|
 | `GITHUB_CLIENT_ID` | *(可选)* | GitHub OAuth App 的 Client ID，也可在后台系统设置中填写 |
 | `GITHUB_CLIENT_SECRET` | *(可选)* | GitHub OAuth App 的 Client Secret，也可在后台系统设置中填写 |
 | `GITHUB_REDIRECT_URL` | *(可选)* | GitHub OAuth 回调地址，如 `https://your-domain.com/public/auth/github/callback` |
 | `ADMIN_KEY_FILE` | `/data/admin.key` | 管理员 Key 写入路径（容器内）|
+| `INTERNAL_TOKEN` | *(必填)* | Postfix 调用 API 内部接口 `/internal/*` 的共享密钥，至少 16 个字符，可用 `openssl rand -hex 32` 生成。未设置时 `docker compose` 会报错，api 与 postfix 也拒绝启动 |
 
 `.env` 示例：
 
 ```dotenv
 SMTP_SERVER_IP=1.2.3.4
 SMTP_HOSTNAME=mail.yourdomain.com
+INTERNAL_TOKEN=<openssl rand -hex 32 的输出>
 GITHUB_REDIRECT_URL=https://your-domain.com/public/auth/github/callback
 ```
 
@@ -118,7 +122,9 @@ GITHUB_REDIRECT_URL=https://your-domain.com/public/auth/github/callback
 cd api
 
 # API → PgBouncer → PostgreSQL；响应成功代表事务已提交
-go run ./cmd/deliverbench \
+# 需要 INTERNAL_TOKEN（与 .env 一致，也可用 -internal-token 传入）。
+# API 的宿主机端口默认只绑定 127.0.0.1，请在服务器本机运行。
+INTERNAL_TOKEN=<与 .env 相同的值> go run ./cmd/deliverbench \
   -url http://127.0.0.1:8080 \
   -recipient mailbox@example.com \
   -requests 30000 -concurrency 128 -raw-bytes 1024
@@ -276,6 +282,72 @@ X-RateLimit-Limit: 500
 X-RateLimit-Remaining: 499
 X-RateLimit-Reset: 1735000000
 ```
+
+---
+
+## 安全说明
+
+### 内部接口鉴权（`INTERNAL_TOKEN`）
+
+- `/internal/*`（邮件投递、域名同步）可以向任意邮箱写入邮件并列出全部域名，因此要求请求头 `X-Internal-Token` 与服务端 `INTERNAL_TOKEN` 一致（常量时间比较）。
+- Postfix 的 LMTP daemon 与域名同步脚本会自动携带该头；`INTERNAL_TOKEN` 未配置或少于 16 个字符时，api 和 postfix 都拒绝启动（fail-closed）。
+- API 的宿主机端口默认只绑定 `127.0.0.1:8080`，用户通过 Nginx 访问。不要把它改成 `0.0.0.0`。
+
+### 速率限制
+
+- `/api/*`：按账号计数的固定窗口。旧版本每个请求都会重置过期时间，持续使用（例如收件箱每 8 秒轮询）会被累计封禁直到停止请求一个窗口，已修复。
+- 公开接口按来源 IP 限制：整体 600 次/分钟；`POST /public/key-login` 30 次/10 分钟；`POST /public/register` 10 次/小时。`POST /api/domains/submit` 每账号 20 次/小时。
+- 这些额度是 `api/main.go` 中的常量。Redis 故障时放行（fail-open）。
+- 来源 IP 取自 Nginx 写入的 `X-Forwarded-For`，API 只信任内网代理转发的该头。如果 Nginx 前面还有 CDN 或其他反向代理，需要在 Nginx 中配置 `real_ip`（`set_real_ip_from` + `real_ip_header`），否则所有用户会共用同一个 IP 的额度。
+
+### 域名提交
+
+- 管理员和用户提交的域名都会校验格式：至少两级、每段为合法主机名、拒绝 IP 地址；国际化域名请使用 punycode（`xn--`）。
+- 用户自助提交的待验证队列上限为 200 条，满后返回 429；管理员入口不受限。
+
+### 日志
+
+- 管理员 API Key 不再写入日志，只写入 `ADMIN_KEY_FILE`。
+
+### Postfix 不做中继
+
+- 这是纯收信服务：`mydestination`、`relay_domains` 为空，`mynetworks` 只信任 `127.0.0.0/8`。
+- 之前没有显式设置 `mynetworks`，默认的 `mynetworks_style=subnet` 会把整个 Docker 子网当成可信网络。宿主机本机进程经 docker-proxy / NAT 访问 25 端口时，来源会落在该子网内，被 `permit_mynetworks` 放行后可以中继到任意地址。现在发往非托管域名的收件人一律返回 `554 5.7.1 Relay access denied`。
+
+### 邮件头解码
+
+- 主题和发件人中的 RFC 2047 编码字（如 `=?utf-8?b?…?=`）由 LMTP daemon 解码后再入库，中文、emoji 主题可以正常显示。
+- 标准库只内置 UTF-8 / US-ASCII / ISO-8859-1。遇到其它字符集（如 GBK）时保留原文，不会因此丢信。
+
+### 与其它服务共用服务器
+
+宿主机的 25 / 80 / 8888 / 8080 等端口常被占用。不要直接改仓库里的 `docker-compose.yml`，在同目录新建 `docker-compose.override.yml`（需要 Docker Compose ≥ 2.24）：
+
+```yaml
+services:
+  frontend:
+    ports: !override []            # 不发布端口，加入已有反向代理所在的 Docker 网络
+    networks:
+      internal: {}
+      proxy_net:
+        aliases: [tempmail-frontend]
+  postfix:
+    ports: !override
+      - "203.0.113.10:25:25"       # 只绑公网 IP，避开宿主机 127.0.0.1:25 上的 exim4 等 MTA
+networks:
+  proxy_net:
+    external: true
+```
+
+- `.env` 里把 `API_HOST_PORT` 改成空闲端口。
+- 前面有反向代理时，要让前端 Nginx 信任它并还原访客 IP：挂载一个包含 `set_real_ip_from <代理所在网段>; real_ip_header X-Real-IP;` 的配置到 `/etc/nginx/conf.d/00-realip.conf`，并让代理传入 `X-Real-IP $remote_addr`。
+- 反向代理里的上游建议写成变量 + Docker DNS（`resolver 127.0.0.11; set $up http://tempmail-frontend:80; proxy_pass $up;`），这样 tempmail 容器暂时不在时，代理上的其它站点仍能正常启动。
+
+### 升级已有部署
+
+1. 在 `.env` 中添加 `INTERNAL_TOKEN`（`openssl rand -hex 32`）。
+2. **重新构建并启动**：`docker compose up -d --build`。`docker-compose.yml` 默认使用 `ghcr.io/${DOCKER_IMAGE_NAMESPACE:-123nhh}/...` 预构建镜像，如果没有本地构建或改用自己的镜像，旧镜像不会校验密钥，`/internal` 仍然是开放的。
+3. api 与 postfix 必须同时升级：只升级 api 会导致旧版 Postfix 的投递被拒绝（邮件留在队列里重试），域名同步也会失败。
 
 ---
 

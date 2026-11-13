@@ -9,7 +9,7 @@
 # ║ 端口         ║  服务       ║ 说明                             ║
 # ╠══════════════╬════════════╬══════════════════════════════════╣
 # ║ 80  (对外)   ║ frontend   ║ 用户访问的 Web 界面                ║
-# ║ 8080(对外)   ║ api        ║ Go API（建议生产环境关闭对外）      ║
+# ║ 8080(仅本机) ║ api        ║ Go API，仅绑定 127.0.0.1          ║
 # ║ 25  (对外)   ║ postfix    ║ SMTP 收信，必须对外开放            ║
 # ╠══════════════╬════════════╬══════════════════════════════════╣
 # ║ 5432(内部)   ║ postgres   ║ 数据库，仅容器内互通             ║
@@ -132,7 +132,9 @@ services:
         soft: 65536
         hard: 65536
     ports:
-      - "${API_HOST_PORT:-8080}:8080"
+      # 仅绑定本机回环地址：用户通过 frontend(Nginx) 访问 API，Postfix 走容器内网。
+      # 不要把它改成 0.0.0.0：直连 API 会绕过 Nginx，白白扩大暴露面。
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
     volumes:
       - ./data:/data
     environment:
@@ -156,6 +158,7 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GITHUB_REDIRECT_URL: ${GITHUB_REDIRECT_URL:-}
       ADMIN_KEY_FILE: ${ADMIN_KEY_FILE:-/data/admin.key}
+      INTERNAL_TOKEN: "${INTERNAL_TOKEN:?INTERNAL_TOKEN is required: set it in .env (generate with: openssl rand -hex 32)}"
     depends_on:
       pgbouncer:
         condition: service_started
@@ -197,6 +200,7 @@ services:
       DB_DSN: ${API_DB_DSN}
       SMTP_HOSTNAME: ${SMTP_HOSTNAME}
       API_URL: http://api:8080
+      INTERNAL_TOKEN: "${INTERNAL_TOKEN:?INTERNAL_TOKEN is required: set it in .env (generate with: openssl rand -hex 32)}"
       POSTFIX_DEFAULT_PROCESS_LIMIT: ${POSTFIX_DEFAULT_PROCESS_LIMIT:-500}
       POSTFIX_SMTPD_PROCESS_LIMIT: ${POSTFIX_SMTPD_PROCESS_LIMIT:-200}
       POSTFIX_SMTPD_CLIENT_CONNECTION_COUNT_LIMIT: ${POSTFIX_SMTPD_CLIENT_CONNECTION_COUNT_LIMIT:-200}

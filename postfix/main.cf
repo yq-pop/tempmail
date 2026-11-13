@@ -15,6 +15,12 @@ myorigin = $mydomain
 inet_interfaces = all
 inet_protocols = ipv4
 
+# 纯收信服务：只信任容器自身回环。
+# 默认的 mynetworks_style=subnet 会把整个 Docker 子网当成可信网络，
+# 宿主机本机进程经 docker-proxy/NAT 访问 25 端口时来源会落在该子网内，
+# 配合下面的 permit_mynetworks 会被允许中继。
+mynetworks = 127.0.0.0/8
+
 # 只收件，不中继
 mydestination =
 relay_domains =

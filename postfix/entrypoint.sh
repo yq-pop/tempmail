@@ -12,6 +12,10 @@ echo "==> Starting Postfix mail receiver (LMTP daemon)..."
 
 chmod +x /usr/local/bin/mail-receiver
 
+# /internal/* 接口需要共享密钥：缺失时 LMTP daemon 与域名同步都会被 API 拒绝，
+# 与其让邮件堆在队列里，不如启动时就明确失败。
+: "${INTERNAL_TOKEN:?INTERNAL_TOKEN is required (must match the api service)}"
+
 # socket 必须放在 Postfix chroot 内的 private/ 目录
 SOCK_DIR=/var/spool/postfix/private
 mkdir -p "$SOCK_DIR"
@@ -48,7 +52,10 @@ set -e
 
 API_URL="${API_URL:-http://api:8080}"
 DOMAIN_MAP="${DOMAIN_MAP:-/var/spool/postfix/virtual_domains}"
-DOMAINS=$(curl -sf "$API_URL/internal/domains" 2>/dev/null || echo "")
+DOMAINS=$(curl -sf -H "X-Internal-Token: ${INTERNAL_TOKEN}" "$API_URL/internal/domains" 2>/dev/null || echo "")
+if [ -z "$DOMAINS" ]; then
+    echo "sync-domains: cannot fetch domain list from $API_URL/internal/domains (check API availability and INTERNAL_TOKEN)" >&2
+fi
 if [ -n "$DOMAINS" ]; then
     if echo "$DOMAINS" | python3 -c '
 import json

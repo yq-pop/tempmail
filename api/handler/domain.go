@@ -14,6 +14,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// maxPendingDomains 限制“用户自助提交”造成的待验证队列长度。
+// 待验证域名由后台每 30 秒串行做 DNS 查询，队列无限增长会拖垮验证循环。
+const maxPendingDomains = 200
+
 type DomainHandler struct {
 	store       *store.Store
 	cfgIP       string // SMTP_SERVER_IP env
@@ -83,6 +87,11 @@ func (h *DomainHandler) Add(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := store.ValidateDomain(req.Domain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "域名格式无效: " + err.Error()})
 		return
 	}
 
@@ -181,6 +190,11 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 	}
 	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 
+	if err := store.ValidateDomain(req.Domain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "域名格式无效: " + err.Error()})
+		return
+	}
+
 	// 获取服务器 IP / hostname（来自 DB 设置或环境变量，不内置硬编码）
 	serverIP := h.getServerIP(c.Request.Context())
 	hostname := h.getServerHostname(c.Request.Context())
@@ -226,6 +240,12 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 // POST /api/admin/domains/mx-register - 提交域名等待自动MX验证（无需手动确认）
 // body: {"domain":"example.com"}
 func (h *DomainHandler) MXRegister(c *gin.Context) {
+	h.register(c, false)
+}
+
+// register 是 MXRegister 与 Submit 的共用实现。
+// limitPending 为 true（普通用户自助提交）时，待验证队列已满会拒绝新的提交；管理员入口不受限。
+func (h *DomainHandler) register(c *gin.Context, limitPending bool) {
 	var req struct {
 		Domain string `json:"domain" binding:"required"`
 	}
@@ -237,6 +257,10 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 
 	serverIP := h.getServerIP(c.Request.Context())
 	hostname := h.getServerHostname(c.Request.Context())
+	if err := store.ValidateDomain(req.Domain); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "域名格式无效: " + err.Error()})
+		return
+	}
 	dnsRequired := dnsRecordsForDomain(req.Domain, serverIP, hostname)
 
 	// 先尝试立即检测；通过则直接激活
@@ -278,6 +302,18 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 	}
 
 	// MX未通过 → 加入 pending，等待后台自动轮询
+	if limitPending {
+		pending, err := h.store.CountPendingDomains(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if pending >= maxPendingDomains {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "待验证域名队列已满，请稍后再试，或联系管理员直接添加"})
+			return
+		}
+	}
+
 	domain, err := h.store.AddDomainPending(c.Request.Context(), req.Domain)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -298,7 +334,7 @@ func (h *DomainHandler) MXRegister(c *gin.Context) {
 // POST /api/domains/submit — 任意已登录用户提交域名进行 MX 自动验证
 // 与 MXRegister 逻辑相同，但不需要管理员权限
 func (h *DomainHandler) Submit(c *gin.Context) {
-	h.MXRegister(c) // 复用相同逻辑
+	h.register(c, true) // 与管理员入口共用逻辑，但额外限制待验证队列长度
 }
 
 // GET /api/admin/domains/:id/status - 查询域名状态（用于前端轮询）

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,9 @@ type Config struct {
 	GitHubClientID       string
 	GitHubClientSecret   string
 	GitHubRedirectURL    string
+	// InternalToken 是 /internal/* 接口的共享密钥，Postfix 侧的 LMTP 守护进程
+	// 与域名同步脚本必须在 X-Internal-Token 头中携带相同的值。
+	InternalToken string
 }
 
 func Load() *Config {
@@ -82,6 +86,7 @@ func Load() *Config {
 		GitHubClientID:      os.Getenv("GITHUB_CLIENT_ID"),
 		GitHubClientSecret:  os.Getenv("GITHUB_CLIENT_SECRET"),
 		GitHubRedirectURL:   os.Getenv("GITHUB_REDIRECT_URL"),
+		InternalToken:       strings.TrimSpace(os.Getenv("INTERNAL_TOKEN")),
 	}
 }
 
