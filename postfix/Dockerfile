@@ -1,8 +1,12 @@
 FROM golang:1.23-alpine AS receiver-builder
 
 WORKDIR /build
+# 先只拷贝依赖清单：源码变化时可以复用已下载的模块层。
+# 依赖 golang.org/x/text 用于把 GBK / Big5 / Shift_JIS 等字符集的邮件转成 UTF-8。
+COPY postfix/go.mod postfix/go.sum ./
+RUN go mod download
 COPY postfix/mail-receiver-lmtpd.go .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/mail-receiver mail-receiver-lmtpd.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/mail-receiver .
 
 # ============================================================
 # Postfix 收件容器

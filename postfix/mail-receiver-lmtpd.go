@@ -21,12 +21,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
@@ -38,6 +40,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/htmlindex"
 )
 
 const (
@@ -332,10 +337,45 @@ func (s *session) readData() ([]byte, error) {
 }
 
 // headerDecoder 解码 RFC 2047 编码字（=?charset?B|Q?...?=），例如中文主题、
-// 带非 ASCII 显示名的发件人。标准库只内置 UTF-8 / US-ASCII / ISO-8859-1。
-var headerDecoder = new(mime.WordDecoder)
+// 带非 ASCII 显示名的发件人。标准库只内置 UTF-8 / US-ASCII / ISO-8859-1，
+// 其余字符集（GBK、Big5、Shift_JIS……）通过 charsetReader 转换。
+var headerDecoder = &mime.WordDecoder{CharsetReader: charsetReader}
 
-// decodeHeader 返回解码后的头部文本。遇到不支持的字符集（如 GBK）时保留原文：
+// charsetAliases 补充 WHATWG 标签表里没有、但真实邮件里会出现的字符集别名。
+// 例如 Python 的 email 库会把 gb2312 写成 "eucgb2312_cn"，Windows 程序常写 cp936 / cp932。
+// 键是规范化后的写法（小写、下划线换成连字符、去掉 "x-" 前缀）。
+var charsetAliases = map[string]string{
+	"eucgb2312-cn": "gbk", "euc-cn": "gbk", "euccn": "gbk", "cp936": "gbk", "ms936": "gbk",
+	"cp950": "big5", "big5-eten": "big5",
+	"cp932": "shift_jis", "ms932": "shift_jis",
+	"eucjp": "euc-jp", "ujis": "euc-jp",
+	"euckr": "euc-kr", "cp949": "euc-kr",
+}
+
+// lookupEncoding 按名称查找字符集：先按 WHATWG 标签表，再按 charsetAliases 的别名。
+// 标签按 WHATWG 规则解析：gb2312 / gbk 都按 GBK 解码，iso-8859-1 / us-ascii 按 windows-1252 解码。
+func lookupEncoding(label string) (encoding.Encoding, error) {
+	label = strings.ToLower(strings.TrimSpace(label))
+	if enc, err := htmlindex.Get(label); err == nil {
+		return enc, nil
+	}
+	norm := strings.TrimPrefix(strings.ReplaceAll(label, "_", "-"), "x-")
+	if alias, ok := charsetAliases[norm]; ok {
+		norm = alias
+	}
+	return htmlindex.Get(norm)
+}
+
+// charsetReader 把指定字符集的输入转成 UTF-8，label 不认识时返回错误。
+func charsetReader(label string, input io.Reader) (io.Reader, error) {
+	enc, err := lookupEncoding(label)
+	if err != nil {
+		return nil, err
+	}
+	return enc.NewDecoder().Reader(input), nil
+}
+
+// decodeHeader 返回解码后的头部文本。遇到不认识的字符集时保留原文：
 // 宁可显示未解码的主题，也不能因为头部异常而丢信。
 func decodeHeader(v string) string {
 	if !strings.Contains(v, "=?") {
@@ -527,22 +567,33 @@ func readAndDrain(r io.Reader, limit int64) ([]byte, error) {
 	return kept.Bytes(), nil
 }
 
+// extractBodies 取出邮件的纯文本与 HTML 正文，均已还原为 UTF-8：
+// 先按 Content-Transfer-Encoding 解开 base64 / quoted-printable，再按 charset 转码。
+// 此前这两步都没做，base64 编码的邮件（Gmail 转发、绝大多数验证码邮件）会把
+// base64 原文当作正文存进数据库，GBK / Big5 等字符集的邮件则是乱码。
 func extractBodies(msg *mail.Message) (string, string) {
 	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
-	if err == nil && strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
+	mediaType = strings.ToLower(mediaType)
+	if err == nil && strings.HasPrefix(mediaType, "multipart/") {
 		return extractMultipart(msg.Body, params["boundary"])
 	}
-	body, _ := io.ReadAll(io.LimitReader(msg.Body, maxMessageBytes))
-	if strings.EqualFold(mediaType, "text/html") {
-		return "", string(body)
+	// 没有 Content-Type（或无法解析）按纯文本处理，与 RFC 2045 的默认值一致。
+	// 单部分的非文本邮件（只有一个 PDF / 图片）没有可显示的正文，原始内容仍可在 RAW 页签查看；
+	// 若把它按文本解码，二进制数据会进入数据库的 TEXT 字段。
+	if err == nil && mediaType != "" && !strings.HasPrefix(mediaType, "text/") {
+		return "", ""
 	}
-	return string(body), ""
+	body := decodeBody(msg.Body, msg.Header.Get("Content-Transfer-Encoding"), params["charset"])
+	if mediaType == "text/html" {
+		return "", body
+	}
+	return body, ""
 }
 
 func extractMultipart(r io.Reader, boundary string) (string, string) {
 	if boundary == "" {
 		body, _ := io.ReadAll(io.LimitReader(r, maxMessageBytes))
-		return string(body), ""
+		return toUTF8(body, ""), ""
 	}
 	var textBody, htmlBody string
 	mr := multipart.NewReader(r, boundary)
@@ -566,17 +617,71 @@ func extractMultipart(r io.Reader, boundary string) (string, string) {
 			}
 			continue
 		}
-		body, _ := io.ReadAll(io.LimitReader(part, maxMessageBytes))
+		// 注意：multipart.Part 会自行解码 quoted-printable 并删除对应的编码头，
+		// 所以这里读到的 Content-Transfer-Encoding 只可能是 base64 / 7bit / 8bit 等，不会重复解码。
+		// 只读取真正会用到的部分，附件不必读进内存。
+		cte := part.Header.Get("Content-Transfer-Encoding")
 		switch mediaType {
 		case "text/plain":
 			if textBody == "" {
-				textBody = string(body)
+				textBody = decodeBody(part, cte, params["charset"])
 			}
 		case "text/html":
 			if htmlBody == "" {
-				htmlBody = string(body)
+				htmlBody = decodeBody(part, cte, params["charset"])
 			}
 		}
 	}
 	return textBody, htmlBody
+}
+
+// decodeBody 读出一段正文：先按 Content-Transfer-Encoding 还原字节，再按 charset 转成 UTF-8。
+// 解码出的 NUL 字节会被去掉：PostgreSQL 的 TEXT 字段不接受 NUL，
+// 而 base64 解开后的内容不再像原来的 base64 文本那样保证没有 NUL。
+func decodeBody(r io.Reader, cte, charset string) string {
+	data, _ := io.ReadAll(io.LimitReader(r, maxMessageBytes))
+	switch strings.ToLower(strings.TrimSpace(cte)) {
+	case "base64":
+		data = decodeBase64Lenient(data)
+	case "quoted-printable":
+		// 宽松解码：标准库把非法的 "=" 序列按字面量处理；真的出错时保留已解出的部分。
+		if decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(data))); err == nil || len(decoded) > 0 {
+			data = decoded
+		}
+	}
+	return strings.ReplaceAll(toUTF8(data, charset), "\x00", "")
+}
+
+// decodeBase64Lenient 解码邮件里的 base64：忽略空白与折行，容忍缺失的填充符，
+// 遇到 "=" 即视为结束。真实世界的邮件经常不严格遵守格式，严格解码会丢掉整段正文。
+func decodeBase64Lenient(data []byte) []byte {
+	clean := make([]byte, 0, len(data))
+loop:
+	for _, c := range data {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '+', c == '/':
+			clean = append(clean, c)
+		case c == '=':
+			break loop
+		}
+	}
+	if len(clean)%4 == 1 { // 单独多出一个字符不构成完整字节，丢弃
+		clean = clean[:len(clean)-1]
+	}
+	out := make([]byte, base64.RawStdEncoding.DecodedLen(len(clean)))
+	n, _ := base64.RawStdEncoding.Decode(out, clean)
+	return out[:n]
+}
+
+// toUTF8 按 label 指定的字符集把 data 转成 UTF-8。label 为空或不认识时，
+// 按 UTF-8 处理并把非法字节替换为 U+FFFD，保证返回值一定是合法 UTF-8。
+func toUTF8(data []byte, label string) string {
+	if label = strings.TrimSpace(label); label != "" {
+		if enc, err := lookupEncoding(label); err == nil {
+			if out, err := enc.NewDecoder().Bytes(data); err == nil {
+				return string(out)
+			}
+		}
+	}
+	return strings.ToValidUTF8(string(data), "\uFFFD")
 }
