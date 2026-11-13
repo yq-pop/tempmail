@@ -14,6 +14,25 @@ type domainRoutes interface {
 	Submit(*gin.Context)
 }
 
+// adminEmailRoutes 是管理后台「全部邮件」的处理器。真实实现是 handler.AdminEmailHandler。
+type adminEmailRoutes interface {
+	List(*gin.Context)
+	Get(*gin.Context)
+}
+
+// registerAdminEmailRoutes 注册管理员专用的跨用户邮件查询接口。
+//
+// 这是整个系统里唯一能读取「别的用户」邮件的入口，因此用 AdminOnly 在后端强制限制：
+// 普通用户调用返回 403，未携带密钥返回 401。普通用户自己的 /api/mailboxes/:id/emails 仍然
+// 只能读取归属于自己账号的邮箱，互不影响。
+func registerAdminEmailRoutes(api *gin.RouterGroup, h adminEmailRoutes) {
+	emails := api.Group("/admin/emails", middleware.AdminOnly())
+	{
+		emails.GET("", h.List)
+		emails.GET("/:id", h.Get)
+	}
+}
+
 // registerDomainRoutes 注册 /api/domains 下的接口。
 //
 // 域名池由管理员维护：普通用户既不能查看域名池，也不能添加或提交域名。

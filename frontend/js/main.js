@@ -34,8 +34,9 @@ function navItems() {
   if (isAdmin()) {
     list.push({ sep: true });
     list.push({ href: '#/admin/accounts', no: 'A1', label: '账户', match: (p) => p === '/admin/accounts' });
-    list.push({ href: '#/admin/domains', no: 'A2', label: '域名管理', match: (p) => p === '/admin/domains' });
-    list.push({ href: '#/admin/settings', no: 'A3', label: '设置', match: (p) => p === '/admin/settings' });
+    list.push({ href: '#/admin/emails', no: 'A2', label: '全部邮件', match: (p) => p === '/admin/emails' || p.startsWith('/admin/emails/') });
+    list.push({ href: '#/admin/domains', no: 'A3', label: '域名管理', match: (p) => p === '/admin/domains' });
+    list.push({ href: '#/admin/settings', no: 'A4', label: '设置', match: (p) => p === '/admin/settings' });
   }
   return list;
 }
@@ -99,6 +100,8 @@ defineRoutes([
   ['/api', { auth: true, view: () => import('views/apidocs') }],
   ['/key', { auth: true, view: () => import('views/key') }],
   ['/admin/accounts', { auth: true, admin: true, view: () => import('views/admin-accounts') }],
+  ['/admin/emails', { auth: true, admin: true, view: () => import('views/admin-emails') }],
+  ['/admin/emails/:id', { auth: true, admin: true, view: () => import('views/admin-emails') }],
   ['/admin/domains', { auth: true, admin: true, view: () => import('views/admin-domains') }],
   ['/admin/settings', { auth: true, admin: true, view: () => import('views/admin-settings') }],
 ], {

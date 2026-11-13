@@ -1,5 +1,5 @@
 // 邮箱总览：读数条 + 邮箱索引 + 内嵌「新建邮箱」控制台
-import { $, $$, esc, on, pad, fmtDate, fmtClock, countUp } from 'core/util';
+import { $, $$, esc, on, pad, fmtDate, fmtRemaining, countUp } from 'core/util';
 import { S, isAdmin } from 'core/state';
 import { api } from 'core/api';
 import { toast, frame, col, copyText, confirmPanel, icon, tag, numberFrames } from 'core/ui';
@@ -82,15 +82,22 @@ export default {
 
     /* ── 邮箱索引 ── */
     const idx = $('#mb-index', bodyEl);
+    // 空状态的说明随后台的邮箱有效期配置变化：默认永久有效；启用过期机制后说明到期后会怎样。
+    function lifetimeHint() {
+      if (!S.settings?.mailbox_expiry_enabled) return '地址默认永久有效，也可以随时手动删除。';
+      return S.settings?.mailbox_auto_cleanup ? '地址到期后将被自动清理。' : '地址到期后将停止收信。';
+    }
     function renderList(highlightId) {
       const boxes = S.mailboxes;
       if (!boxes.length) {
-        idx.innerHTML = `<div class="empty"><p class="serif">尚无邮箱</p><p class="hint">在右侧控制台创建第一个邮箱，<br/>地址将在到期后自动销毁。</p></div>`;
+        idx.innerHTML = `<div class="empty"><p class="serif">尚无邮箱</p><p class="hint">在右侧控制台创建第一个邮箱，<br/>${esc(lifetimeHint())}</p></div>`;
         return;
       }
       idx.innerHTML = `<ul class="mb-list" style="border-top:0">${boxes.map((mb, i) => {
         const [local, dom] = splitAddr(mb.full_address);
-        return `<li class="mb-row ${String(mb.id) === String(highlightId) ? 'is-new' : ''}" data-id="${esc(mb.id)}" data-addr="${esc(mb.full_address)}" data-exp="${esc(mb.expires_at || '')}" data-cr="${esc(mb.created_at || '')}">
+        // expires_at 为 null 表示后台未启用邮箱过期机制（永久有效）：这一行不显示任何剩余时间。
+        const hasExp = !!mb.expires_at;
+        return `<li class="mb-row ${String(mb.id) === String(highlightId) ? 'is-new' : ''}" data-id="${esc(mb.id)}" data-addr="${esc(mb.full_address)}" data-exp="${esc(mb.expires_at || '')}" data-expired="${mb.expired ? 1 : 0}" data-cr="${esc(mb.created_at || '')}">
           <span class="mb-no mono">[${pad(i + 1)}]</span>
           <button type="button" class="mb-addr" data-act="open" data-cursor="打开" aria-label="打开 ${esc(mb.full_address)}">${esc(local)}<em>@</em>${esc(dom)}</button>
           <span class="mb-acts">
@@ -98,24 +105,28 @@ export default {
             <button type="button" class="icon-btn" data-act="open" aria-label="查看邮件" data-cursor="收信">${icon('open')}</button>
             <button type="button" class="icon-btn danger" data-act="del" aria-label="删除邮箱" data-cursor="删除">${icon('trash')}</button>
           </span>
-          <span class="mb-meta mono"><span>创建 ${fmtDate(mb.created_at)}</span><span class="ttl">—</span><span class="gauge" aria-hidden="true"><i></i></span></span>
+          <span class="mb-meta mono"><span>创建 ${fmtDate(mb.created_at)}</span>${hasExp ? '<span class="ttl">—</span><span class="gauge" aria-hidden="true"><i></i></span>' : ''}</span>
         </li>`;
       }).join('')}</ul>`;
       tickTTL();
     }
 
+    // 只有后端返回了到期时间的邮箱才有倒计时；已到期的邮箱显示「已到期」。
     function tickTTL() {
       const now = Date.now();
       $$('.mb-row', idx).forEach((row) => {
         const ttl = $('.ttl', row), g = $('.gauge', row);
-        if (!row.dataset.exp) { ttl.textContent = '永不过期'; g.style.display = 'none'; return; }
-        const exp = Date.parse(row.dataset.exp), cr = Date.parse(row.dataset.cr) || exp - 30 * 60000;
+        if (!ttl || !g) return; // 永久有效的邮箱不显示剩余时间
+        const exp = Date.parse(row.dataset.exp), cr = Date.parse(row.dataset.cr);
         const left = exp - now;
-        const total = Math.max(1, exp - cr);
-        if (left <= 0) { ttl.textContent = '已过期'; ttl.className = 'ttl crit'; g.className = 'gauge crit'; g.firstElementChild.style.setProperty('--p', 0); return; }
+        const total = Math.max(1, exp - (Number.isFinite(cr) ? cr : exp));
+        if (left <= 0 || row.dataset.expired === '1') {
+          ttl.textContent = '已到期'; ttl.className = 'ttl crit'; g.className = 'gauge crit'; g.firstElementChild.style.setProperty('--p', 0);
+          return;
+        }
         const mins = left / 60000;
         const level = mins <= 5 ? 'crit' : mins <= 15 ? 'warn' : '';
-        ttl.textContent = `剩余 ${fmtClock(left)}`;
+        ttl.textContent = `剩余 ${fmtRemaining(left)}`;
         ttl.className = 'ttl ' + level;
         g.className = 'gauge ' + level;
         g.firstElementChild.style.setProperty('--p', Math.max(0, Math.min(1, left / total)).toFixed(4));
@@ -123,13 +134,15 @@ export default {
     }
     timer = setInterval(tickTTL, 1000);
 
-    async function reload(highlightId) {
-      try { S.mailboxes = await api.listMailboxes(); } catch (e) { toast('刷新失败：' + e.message, 'error'); }
+    async function reload(highlightId, { quiet = false } = {}) {
+      try { S.mailboxes = await api.listMailboxes(); } catch (e) { if (!quiet) toast('刷新失败：' + e.message, 'error'); return; }
       if (!alive) return;
       renderList(highlightId);
       const first = $('[data-n]', bodyEl); // 首个读数是「我的邮箱」
       if (first) first.textContent = S.mailboxes.length.toLocaleString();
     }
+    // 定期静默同步：后台调整了过期配置、或邮箱被自动清理后，列表与倒计时能随之更新。
+    const syncTimer = setInterval(() => reload(undefined, { quiet: true }), 30000);
 
     offs.push(on(idx, 'click', '[data-act]', async (e, t) => {
       const row = t.closest('.mb-row');
@@ -229,6 +242,6 @@ export default {
       finally { btn.disabled = false; }
     });
 
-    return () => { alive = false; clearInterval(timer); offs.forEach((f) => f()); };
+    return () => { alive = false; clearInterval(timer); clearInterval(syncTimer); offs.forEach((f) => f()); };
   },
 };

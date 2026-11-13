@@ -41,7 +41,8 @@ export const api = {
 
   // 邮箱 / 邮件
   createMailbox: (body) => apiFetch(API_BASE + '/mailboxes', { method: 'POST', body: json(body || {}) }).then((d) => d.mailbox || d),
-  listMailboxes: () => apiFetch(API_BASE + '/mailboxes').then((d) => (Array.isArray(d) ? d : d.data || [])),
+  listMailboxes: () => apiFetch(API_BASE + '/mailboxes?size=100').then((d) => (Array.isArray(d) ? d : d.data || [])),
+  getMailbox: (id) => apiFetch(API_BASE + '/mailboxes/' + id).then((d) => d.mailbox || d),
   deleteMailbox: (id) => apiFetch(API_BASE + '/mailboxes/' + id, { method: 'DELETE' }),
   listEmails: (mid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails').then((d) => (Array.isArray(d) ? d : d.data || [])),
   getEmail: (mid, eid) => apiFetch(API_BASE + '/mailboxes/' + mid + '/emails/' + eid).then((d) => d.email || d),
@@ -61,6 +62,13 @@ export const api = {
     mxRegister: (body) => apiFetch(API_BASE + '/admin/domains/mx-register', { method: 'POST', body: json(body) }),
     refreshDomainMX: () => apiFetch(API_BASE + '/admin/domains/refresh-mx', { method: 'POST' }),
     getDomainStatus: (id) => apiFetch(API_BASE + '/admin/domains/' + id + '/status'),
+    // 全部邮件（跨用户，仅管理员）：params = { field, q, order, page, size }，空值不会发送
+    listEmails: (params = {}) => {
+      const qs = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+      return apiFetch(API_BASE + '/admin/emails?' + qs.toString());
+    },
+    getEmail: (id) => apiFetch(API_BASE + '/admin/emails/' + id).then((d) => d.email || d),
   },
 };
 

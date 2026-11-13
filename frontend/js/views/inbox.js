@@ -1,36 +1,33 @@
 // 收信仪：左侧邮件索引 + 右侧阅读窗格（旧版「列表页 / 详情页」合并为双栏）
-import { $, $$, esc, on, pad, fmtDate, fmtClock, timeAgo } from 'core/util';
-import { S } from 'core/state';
+import { $, $$, esc, on, pad, fmtRemaining, timeAgo } from 'core/util';
 import { api } from 'core/api';
-import { toast, frame, col, copyText, confirmPanel, icon, tag } from 'core/ui';
+import { toast, frame, col, copyText, confirmPanel, icon } from 'core/ui';
 import { go } from 'core/router';
 import { scrollToEl } from 'fx/scroll';
+import { renderMailReader } from 'views/mail-reader';
 
 const POLL_SECONDS = 8;
+const MAILBOX_REFRESH_SECONDS = 30;
 const sameIds = (a, b) => a.length === b.length && a.every((e, i) => e.id === b[i].id);
 const wide = () => matchMedia('(min-width: 961px)').matches;
 
-function mailDoc(html) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><base target="_blank">
-<style>:root{color-scheme:light}html,body{margin:0}body{padding:26px;font:14px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#11110E;background:#F3EFE6;word-wrap:break-word;overflow-wrap:anywhere}img{max-width:100%;height:auto}a{color:#B3280A}table{max-width:100%}pre{white-space:pre-wrap}</style>
-</head><body>${html}</body></html>`;
-}
-
 export default {
   async mount(root, { id, eid }) {
-    let mb = S.mailboxes.find((m) => String(m.id) === String(id));
-    if (!mb) {
-      try { S.mailboxes = await api.listMailboxes(); mb = S.mailboxes.find((m) => String(m.id) === String(id)); } catch { /* 下面统一处理 */ }
-    }
-    if (!mb) { toast('邮箱不存在或已过期', 'warn'); go('/'); return; }
+    // 每次都向后端取最新的邮箱信息（含按后台配置计算的到期时间），不依赖列表缓存：
+    // 既保证到期展示与后端一致，也让第一页之外的老邮箱可以直接打开。
+    let mb = null;
+    try { mb = await api.getMailbox(id); } catch { /* 下面统一处理 */ }
+    if (!mb) { toast('邮箱不存在或已被清理', 'warn'); go('/'); return; }
 
     const addr = mb.full_address;
     const at = addr.lastIndexOf('@');
     let emails = [];
     let selected = eid || null;
-    let alive = true, nextIn = POLL_SECONDS, timer = null;
+    let alive = true, nextIn = POLL_SECONDS, sinceRefresh = 0, timer = null;
     const offs = [];
-    const exp = mb.expires_at ? Date.parse(mb.expires_at) : null;
+    // 到期时间由后端按后台配置计算；null 表示未启用过期机制（永久有效），此时不显示任何剩余时间。
+    let exp = mb.expires_at ? Date.parse(mb.expires_at) : null;
+    let expiredByServer = !!mb.expired;
 
     root.innerHTML = `
     <div class="wrap view">
@@ -109,62 +106,7 @@ export default {
         return;
       }
       if (my !== reading || !alive) return;
-      const from = e.sender || e.from_addr || '—';
-      const html = e.body_html || e.html_body || '';
-      const text = e.body_text || e.text_body || '';
-      const raw = e.raw_message || '';
-      const tabs = [];
-      if (html) tabs.push(['html', 'HTML']);
-      tabs.push(['text', 'TEXT']);
-      if (raw) tabs.push(['raw', 'RAW']);
-      let cur = html ? 'html' : 'text';
-
-      readerEl.innerHTML = `
-        <header class="reader-head">
-          <div class="row between"><span class="mono dim">ID ${esc(String(e.id).slice(0, 8))}</span>
-            <button type="button" class="btn btn--sm btn--danger" data-act="del-email" data-cursor="删除">${icon('trash', 13)} 删除</button></div>
-          <h2 class="reader-subject">${esc(e.subject || '(无主题)')}</h2>
-          <div class="reader-meta mono"><span>FROM</span><b>${esc(from)}</b><span>TO</span><b>${esc(addr)}</b><span>DATE</span><b>${esc(fmtDate(e.received_at))}</b>${e.size_bytes ? `<span>SIZE</span><b>${esc(e.size_bytes)} B</b>` : ''}</div>
-        </header>
-        <div class="tabs" role="tablist" style="margin:18px 0 0;border-bottom:0">${tabs.map(([k, l]) => `<button type="button" class="tab" role="tab" data-view="${k}" aria-selected="${k === cur}">${l}</button>`).join('')}</div>
-        <div class="paper" id="paper" data-native-cursor></div>`;
-
-      const paper = $('#paper', readerEl);
-      let ro = null;
-      function paint() {
-        if (ro) { ro.disconnect(); ro = null; }
-        if (cur === 'html') {
-          paper.innerHTML = '<iframe sandbox="allow-same-origin allow-popups" referrerpolicy="no-referrer" title="邮件正文"></iframe>';
-          const f = $('iframe', paper);
-          const fit = () => {
-            try {
-              const next = Math.max(200, f.contentDocument.documentElement.scrollHeight) + 'px';
-              if (f.style.height !== next) f.style.height = next;
-            } catch { /* 跨域保护 */ }
-          };
-          f.addEventListener('load', () => {
-            fit();
-            // 必须用 iframe 自身窗口的 ResizeObserver 观察其内部元素；
-            // 用父窗口的构造函数跨文档观察会导致每帧都触发 "loop completed with undelivered notifications"
-            try {
-              const RO = f.contentWindow.ResizeObserver || ResizeObserver;
-              ro = new RO(fit);
-              ro.observe(f.contentDocument.documentElement);
-            } catch { /* ignore */ }
-          });
-          f.srcdoc = mailDoc(html);
-          setTimeout(fit, 400);
-        } else {
-          paper.innerHTML = `<pre>${esc(cur === 'raw' ? raw : (text || '(邮件内容为空)'))}</pre>`;
-        }
-      }
-      paint();
-      // 绑定在本次渲染生成的标签上，随阅读窗格重绘自动释放
-      $$('[data-view]', readerEl).forEach((t) => t.addEventListener('click', () => {
-        cur = t.dataset.view;
-        $$('[data-view]', readerEl).forEach((b) => b.setAttribute('aria-selected', String(b === t)));
-        paint();
-      }));
+      renderMailReader(readerEl, e, { to: addr, deletable: true });
     }
 
     /* ── 轮询 ── */
@@ -188,16 +130,39 @@ export default {
       } catch (e) { if (manual) toast('刷新失败：' + e.message, 'error'); }
     }
 
+    // 定期向后端同步邮箱状态：后台修改了过期配置、或邮箱被自动清理后，页面能随之更新。
+    async function refreshMailbox() {
+      try {
+        const fresh = await api.getMailbox(id);
+        if (!alive) return;
+        exp = fresh.expires_at ? Date.parse(fresh.expires_at) : null;
+        expiredByServer = !!fresh.expired;
+      } catch (err) {
+        if (alive && err.status === 404) { toast('该邮箱已被清理', 'warn'); go('/'); }
+      }
+    }
+
+    // 剩余时间只在后端返回了到期时间（已启用过期机制）时显示；永久有效的邮箱不显示任何剩余时间。
+    // 返回 true 表示邮箱已到期。
+    function renderTTL() {
+      const left = exp === null ? null : exp - Date.now();
+      const expired = left !== null && (left <= 0 || expiredByServer);
+      if (left === null) { ttlEl.textContent = ''; ttlEl.style.color = ''; }
+      else if (expired) { ttlEl.textContent = '邮箱已到期 · 不再接收新邮件'; ttlEl.style.color = 'var(--signal-t)'; }
+      else {
+        ttlEl.textContent = `邮箱剩余 ${fmtRemaining(left)}`;
+        ttlEl.style.color = left < 5 * 60000 ? 'var(--signal-t)' : left < 15 * 60000 ? 'var(--amber-t)' : '';
+      }
+      if (expired) { liveEl.className = 'tag tag--err'; liveEl.textContent = 'EXPIRED'; return true; }
+      liveEl.className = 'tag tag--ok tag--live';
+      return false;
+    }
+
     function tick() {
       nextIn -= 1;
       if (nextIn <= 0) { nextIn = POLL_SECONDS; poll(); }
-      liveEl.textContent = `LIVE · 下次校准 ${pad(nextIn)}s`;
-      if (exp) {
-        const left = exp - Date.now();
-        ttlEl.textContent = left > 0 ? `邮箱剩余 ${fmtClock(left)}` : '邮箱已过期';
-        ttlEl.style.color = left <= 0 ? 'var(--signal-t)' : left < 5 * 60000 ? 'var(--signal-t)' : left < 15 * 60000 ? 'var(--amber-t)' : '';
-        if (left <= 0) { liveEl.className = 'tag tag--err'; liveEl.textContent = 'EXPIRED'; }
-      } else ttlEl.textContent = '邮箱永不过期';
+      if (++sinceRefresh >= MAILBOX_REFRESH_SECONDS) { sinceRefresh = 0; refreshMailbox(); }
+      if (!renderTTL()) liveEl.textContent = `LIVE · 下次校准 ${pad(nextIn)}s`;
       // 列表中的相对时间随时间刷新
       $$('.mail-item', listEl).forEach((n, i) => { const e = emails[i]; const t = $('.mi-time', n); if (e && t) t.textContent = timeAgo(e.received_at); });
     }

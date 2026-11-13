@@ -43,6 +43,27 @@ export function fmtClock(ms) {
   return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
 }
 
+/** 剩余时间倒计时：不足 1 小时 mm:ss，不足 1 天 h:mm:ss，更长则 "N 天 HH 时"。 */
+export function fmtRemaining(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400), hr = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (d) return `${d} 天 ${pad(hr)} 时`;
+  if (hr) return `${hr}:${pad(m)}:${pad(sec)}`;
+  return `${pad(m)}:${pad(sec)}`;
+}
+
+/** 把分钟数写成易读的时长：30 → "30 分钟"，90 → "1 小时 30 分钟"，1440 → "1 天" */
+export function fmtDuration(minutes) {
+  const m = Math.round(Number(minutes));
+  if (!Number.isFinite(m) || m <= 0) return '—';
+  const d = Math.floor(m / 1440), hr = Math.floor((m % 1440) / 60), mn = m % 60;
+  const parts = [];
+  if (d) parts.push(`${d} 天`);
+  if (hr) parts.push(`${hr} 小时`);
+  if (mn || !parts.length) parts.push(`${mn} 分钟`);
+  return parts.join(' ');
+}
+
 export function timeAgo(s) {
   if (!s) return '—';
   const mins = Math.floor((Date.now() - new Date(s).getTime()) / 60000);

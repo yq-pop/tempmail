@@ -462,6 +462,24 @@ a.sig:hover { text-decoration: underline; }
 .paper { background: var(--paper); color: var(--ink); margin-top: 22px; position: relative; }
 .paper iframe { display: block; width: 100%; min-height: 200px; border: 0; background: transparent; }
 .paper pre { margin: 0; padding: 26px; font: 400 13px/1.8 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--ink); max-height: 640px; overflow: auto; }
+
+/* ───────── 管理 · 全部邮件：搜索栏 + 列表 ───────── */
+.ae-bar { display: grid; grid-template-columns: minmax(120px, 170px) minmax(0, 1fr) auto auto; gap: 18px 28px; align-items: end; }
+.ae-cell { display: grid; gap: 8px; min-width: 0; }
+.ae-cell .lbl { justify-content: flex-start; }
+.ae-cell .select, .ae-cell .input { width: 100%; }
+.ae-act { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.input[type="search"] { -webkit-appearance: none; appearance: none; }
+.input[type="search"]::-webkit-search-cancel-button { display: none; }
+.ae-tbl tbody tr[data-id] { cursor: pointer; }
+.ae-tbl tbody tr.is-active { background: color-mix(in srgb, var(--fg) 7%, transparent); box-shadow: inset 2px 0 0 var(--signal); }
+.ae-tbl td { padding: 14px 12px; }
+.ae-from { font: 500 11px/1.5 var(--mono); color: var(--dim); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ae-subj { font: 700 14px/1.45 var(--sans); min-width: 150px; word-break: break-word; }
+.ae-who { display: grid; gap: 3px; max-width: 190px; }
+.ae-who b { font-weight: 700; font-size: 13px; }
+.ae-who span { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ae-time { white-space: nowrap; }
 .scanline { position: relative; height: 1px; background: var(--hair-3); overflow: hidden; }
 .scanline::after { content: ""; position: absolute; top: 0; bottom: 0; width: 28%; background: var(--signal); animation: scan 1.6s linear infinite; }
 @keyframes scan { from { left: -30%; } to { left: 100%; } }
@@ -610,6 +628,8 @@ html.xray #xray-tip.on { opacity: 1; }
   .who { display: none; }
 }
 @media (max-width: 960px) {
+  .ae-bar { grid-template-columns: 1fr 1fr; }
+  .ae-q { grid-column: 1 / -1; order: -1; }
   :root { --rail: 0px; }
   .off-1 { margin-top: 0; }
   .col { grid-column: 1 / -1; }
@@ -636,6 +656,8 @@ html.xray #xray-tip.on { opacity: 1; }
   .page-head .side { display: none; }
 }
 @media (max-width: 640px) {
+  .ae-bar { grid-template-columns: 1fr; }
+  .ae-from { max-width: 110px; }
   .frame-head { grid-template-columns: auto 1fr; } .frame-code { display: none; }
   .brand-rev { display: none; }
   .brand { gap: 10px; }

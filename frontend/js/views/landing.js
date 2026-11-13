@@ -1,5 +1,5 @@
 // 落地页（未登录）：英雄区 + 接入终端 + 原理 + 遥测 + 规格
-import { $, esc, on, splitTitle, countUp, pad } from 'core/util';
+import { $, esc, on, splitTitle, countUp, pad, fmtDuration } from 'core/util';
 import { S, saveSession, emit } from 'core/state';
 import { api, PUBLIC_BASE } from 'core/api';
 import { toast, frame, col, copyText, icon } from 'core/ui';
@@ -11,6 +11,15 @@ export default {
     const s = S.settings || {};
     const title = s.site_title || 'TempMail';
     const parts = splitTitle(title);
+    // 邮箱寿命的说明跟随后台配置：默认永久有效；启用过期机制后说明有效时长以及到期后会怎样。
+    const expiryOn = bool(s.mailbox_expiry_enabled), autoClean = bool(s.mailbox_auto_cleanup);
+    const lifetimeText = expiryOn
+      ? `创建 ${fmtDuration(s.mailbox_ttl_minutes)} 后到期，${autoClean ? '到期后自动清理' : '到期后停止收信'}`
+      : '永久有效，管理员可开启过期机制';
+    const destroyText = (expiryOn
+      ? (autoClean ? '邮箱到期后自动清除，邮件随之销毁；也可以随时手动删除。' : '邮箱到期后停止收信，随时可以手动删除。')
+      : '邮箱默认永久有效，不会被自动清理；随时可以手动删除，邮件随之销毁。')
+      + ' HTML 邮件在沙箱中渲染，脚本不会执行。';
     const cap = '<span class="line hero-cap-line" style="--i:2"><span class="hero-cap serif">ephemeral — by design</span></span>';
     const titleHTML = parts.length === 2
       ? `<span class="line"><span><span class="outline">${esc(parts[0])}</span></span></span><span class="line" style="--i:1"><span>${esc(parts[1])}</span></span>${cap}`
@@ -45,7 +54,7 @@ export default {
         <div class="principle g12">
           <article class="col step-card" data-reveal style="${col(1, 5)}"><div class="big">01</div><h3>分配</h3><p>一键生成随机地址，或指定本地部分。域名由系统从域名池中分配，支持单级域名，也支持通配 MX 下的随机多级子域。</p></article>
           <article class="col step-card off-1" data-reveal style="${col(7, 5)}"><div class="big">02</div><h3>接收</h3><p>Postfix 只收不发，经 LMTP 直接入库。收件箱每 8 秒自动校准，新邮件即时标记。</p></article>
-          <article class="col step-card" data-reveal style="${col(3, 6)}"><div class="big">03</div><h3>销毁</h3><p>邮箱到期自动清除，邮件随之销毁；也可以随时手动删除。HTML 邮件在沙箱中渲染，脚本不会执行。</p></article>
+          <article class="col step-card" data-reveal style="${col(3, 6)}"><div class="big">03</div><h3>销毁</h3><p>${esc(destroyText)}</p></article>
         </div>
       </section>
 
@@ -77,7 +86,7 @@ export default {
               <dl class="kv">
                 <dt>收信路径</dt><dd>SMTP :25 → Postfix → LMTP → API → PostgreSQL</dd>
                 <dt>中继策略</dt><dd>RECEIVE-ONLY · 不做任何外发中继</dd>
-                <dt>邮箱寿命</dt><dd>默认 30 分钟，管理员可调；0 = 永不过期</dd>
+                <dt>邮箱寿命</dt><dd>${esc(lifetimeText)}</dd>
                 <dt>域名能力</dt><dd>单域名 MX / 通配 MX（随机多级子域）</dd>
                 <dt>隔离模型</dt><dd>按账户隔离 · API Key 鉴权</dd>
                 <dt>邮件渲染</dt><dd>iframe sandbox，禁用脚本</dd>

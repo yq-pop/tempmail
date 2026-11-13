@@ -10,7 +10,7 @@ export default {
     <div class="wrap view">
       <section class="page-head g12">
         <div class="col" style="${col(1, 9)}">
-          <p class="kicker mono"><b>[ROUTE A2]</b><span>/ ADMIN / DOMAINS</span><span>域名管理</span></p>
+          <p class="kicker mono"><b>[ROUTE A3]</b><span>/ ADMIN / DOMAINS</span><span>域名管理</span></p>
           <h1 class="display" data-skew data-reveal="mask"><span class="line"><span class="outline">Domain</span></span><span class="line" style="--i:1"><span>Admin</span></span></h1>
         </div>
         <div class="col side" style="${col(10, 3)}">

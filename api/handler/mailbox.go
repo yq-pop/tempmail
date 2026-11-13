@@ -41,14 +41,6 @@ func (h *MailboxHandler) Create(c *gin.Context) {
 	address = strings.ToLower(address)
 	customSubdomain := strings.TrimSpace(req.Subdomain)
 
-	// 读取 TTL 设置
-	ttlMinutes := 30
-	if ttlStr, err := h.store.GetSetting(c.Request.Context(), "mailbox_ttl_minutes"); err == nil {
-		if n, err := strconv.Atoi(ttlStr); err == nil && n > 0 {
-			ttlMinutes = n
-		}
-	}
-
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	randomMode := false
 	if mode == "" {
@@ -155,7 +147,8 @@ func (h *MailboxHandler) Create(c *gin.Context) {
 	}
 	fullAddress := fmt.Sprintf("%s@%s", address, domainName)
 
-	mailbox, err := h.store.CreateMailbox(c.Request.Context(), account.ID, address, domainRecord.ID, fullAddress, ttlMinutes)
+	// 邮箱有效期由后台配置决定：未启用过期机制时邮箱永久有效（返回的 expires_at 为 null）。
+	mailbox, err := h.store.CreateMailbox(c.Request.Context(), account.ID, address, domainRecord.ID, fullAddress)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "address already taken, try again"})
@@ -192,6 +185,23 @@ func (h *MailboxHandler) List(c *gin.Context) {
 		"page":  page,
 		"size":  size,
 	})
+}
+
+// GET /api/mailboxes/:id - 读取单个邮箱（含后台配置计算出的到期信息）
+// 只能读取归属于当前账号的邮箱，别人的邮箱一律按「不存在」处理。
+func (h *MailboxHandler) Get(c *gin.Context) {
+	account := middleware.GetAccount(c)
+	id, err := parseUUID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mailbox id"})
+		return
+	}
+	mailbox, err := h.store.GetMailbox(c.Request.Context(), id, account.ID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "mailbox not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"mailbox": mailbox})
 }
 
 // DELETE /api/mailboxes/:id - 删除邮箱

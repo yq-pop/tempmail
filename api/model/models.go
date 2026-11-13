@@ -56,7 +56,11 @@ type Mailbox struct {
 	DomainID    int       `json:"domain_id"`
 	FullAddress string    `json:"full_address"`
 	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	// ExpiresAt 由后台的邮箱有效期配置动态计算（创建时间 + 有效时长）。
+	// 为 null 表示当前未启用过期机制，邮箱永久有效；前端据此决定是否显示「剩余时间」。
+	ExpiresAt *time.Time `json:"expires_at"`
+	// Expired 表示已启用过期机制且该邮箱已到期（到期的邮箱不再收信，即使没有被自动清理）。
+	Expired bool `json:"expired"`
 }
 
 type Email struct {

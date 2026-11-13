@@ -1,8 +1,8 @@
-// 管理 · 系统设置：访问控制 / 品牌 / 邮件服务 / OAuth / 服务信息
-import { $, esc, on } from 'core/util';
+// 管理 · 系统设置：访问控制 / 品牌 / 邮箱有效期 / 邮件服务 / OAuth / 服务信息
+import { $, esc, on, fmtDuration } from 'core/util';
 import { S } from 'core/state';
 import { api } from 'core/api';
-import { toast, frame, col, copyText, icon, numberFrames } from 'core/ui';
+import { toast, frame, col, copyText, confirmPanel, icon, numberFrames } from 'core/ui';
 import { emit } from 'core/state';
 
 const bool = (v) => v === true || v === 'true';
@@ -28,7 +28,7 @@ export default {
     <div class="wrap view">
       <section class="page-head g12">
         <div class="col" style="${col(1, 9)}">
-          <p class="kicker mono"><b>[ROUTE A3]</b><span>/ ADMIN / SETTINGS</span><span>系统设置</span></p>
+          <p class="kicker mono"><b>[ROUTE A4]</b><span>/ ADMIN / SETTINGS</span><span>系统设置</span></p>
           <h1 class="display" data-skew data-reveal="mask"><span class="line"><span class="outline">Sys</span></span><span class="line" style="--i:1"><span>Settings</span></span></h1>
         </div>
         <div class="col side" style="${col(10, 3)}"><p>每一项独立保存，<em>即时生效。</em></p></div>
@@ -42,6 +42,13 @@ export default {
 
     const smtpIp = s.smtp_server_ip || '', smtpHost = s.smtp_hostname || '';
     const origin = location.origin;
+
+    // 邮箱有效期：三项设置相互独立。后端 GET /api/admin/settings 始终返回当前生效值（缺失时为默认）。
+    const expState = {
+      enabled: bool(s.mailbox_expiry_enabled),
+      ttl: Number.parseInt(s.mailbox_ttl_minutes, 10) || 30,
+      cleanup: bool(s.mailbox_auto_cleanup),
+    };
 
     $('#set-body', root).innerHTML = `
     <div class="g12" style="row-gap:var(--gut)">
@@ -67,11 +74,15 @@ export default {
           <p class="hint mt-s">Key 文件位置：<code>/data/admin.key</code>（API 服务容器内）</p>`)}
       </div>
       <div class="col stack" style="${col(8, 5)};--gap:var(--gut);margin-top:clamp(0px,5vw,72px)">
+        ${frame({ sub: '邮箱有效期', code: 'SET-TTL', xray: 'EXPIRY' }, `
+          <div id="exp-status" class="notice" role="status" style="margin-bottom:20px"></div>
+          ${toggle({ key: 'mailbox_expiry_enabled', label: '启用邮箱过期机制', desc: '默认关闭：邮箱永久有效，不会到期，也不会被清理，前台不显示剩余时间。开启后，邮箱从创建起超过下方有效时长即到期。', on: expState.enabled })}
+          ${field({ key: 'mailbox_ttl_minutes', label: '邮箱有效时长（分钟）', value: String(expState.ttl), type: 'number', hint: '<span id="ttl-human"></span>从邮箱创建时间起算，修改后对所有邮箱立即生效；仅在启用过期机制时参与判断。', placeholder: '30' })}
+          ${toggle({ key: 'mailbox_auto_cleanup', label: '到期后自动清理', desc: '独立于上面的开关。关闭：到期的邮箱失效（停止收信、前台显示「已到期」）但会保留，邮件仍可查看。开启：后台每分钟永久删除已到期的邮箱及其邮件。', on: expState.cleanup })}`)}
         ${frame({ sub: '邮件服务', code: 'SET-MAIL', xray: 'MAIL' }, `
           ${field({ key: 'smtp_server_ip', label: 'SMTP 服务器公网 IP', value: smtpIp, hint: '用于生成 SPF DNS 配置提示', placeholder: '0.0.0.0' })}
           ${field({ key: 'smtp_hostname', label: '邮件服务器主机名', value: smtpHost, hint: '用作 MX 记录目标（如 mail.yourdomain.com）。设置后添加域名只需一条 MX 记录，无需额外 A 记录。', placeholder: 'mail.yourdomain.com' })}
           ${field({ key: 'default_domain', label: '默认邮箱域名', value: s.default_domain || '', hint: '创建邮箱时下拉框优先选中的域名', placeholder: 'mail.example.com' })}
-          ${field({ key: 'mailbox_ttl_minutes', label: '邮箱有效期（分钟）', value: s.mailbox_ttl_minutes || '30', hint: '新建邮箱的默认存活时间，0 = 永不过期', placeholder: '30' })}
           ${field({ key: 'max_mailboxes_per_user', label: '每账户邮箱上限', value: s.max_mailboxes_per_user || '5', hint: '每个账户同时存在的邮箱数量上限', placeholder: '5' })}`)}
         ${frame({ sub: 'Linux DO Connect', code: 'SET-LDO', xray: 'LINUXDO' }, `
           ${field({ key: 'linuxdo_client_id', label: 'Client ID', value: s.linuxdo_client_id || '', placeholder: 'Client ID' })}
@@ -85,28 +96,96 @@ export default {
     </div>`;
     numberFrames(root);
 
+    /* ── 邮箱有效期：状态说明 + 破坏性操作的二次确认 ── */
+    const human = (minutes = expState.ttl) => fmtDuration(minutes);
+    function renderExpiryStatus() {
+      const el = $('#exp-status', root);
+      if (!el) return;
+      let text, kind = '';
+      if (!expState.enabled) {
+        text = expState.cleanup
+          ? '邮箱永久有效。「到期后自动清理」已开启，但只有启用过期机制后才会生效。'
+          : '邮箱永久有效：不会到期，也不会被清理，前台不显示剩余时间。';
+      } else if (expState.cleanup) {
+        kind = ' notice--err';
+        text = `邮箱创建 ${human()} 后到期，到期后由后台每分钟自动清理（永久删除邮箱及其邮件）。`;
+      } else {
+        kind = ' notice--ok';
+        text = `邮箱创建 ${human()} 后到期。到期的邮箱停止收信、前台显示「已到期」，但不会被删除，邮件仍可查看。`;
+      }
+      el.className = 'notice' + kind;
+      el.innerHTML = `<span class="mono">[${expState.enabled ? 'ON' : 'OFF'}]</span><span>当前：${esc(text)}</span>`;
+      const h = $('#ttl-human', root);
+      if (h) h.textContent = `= ${human()}。`;
+    }
+    renderExpiryStatus();
+
+    // 开启这两项会让邮箱立即到期 / 被永久删除，开启前必须让管理员确认。
+    const confirmEnable = {
+      mailbox_expiry_enabled: () => ({
+        code: 'ENABLE EXPIRY', title: '启用邮箱过期机制', danger: expState.cleanup, confirmText: '确认启用',
+        message: `<p>启用后，创建时间已超过 <strong>${esc(human())}</strong> 的邮箱会<strong>立即到期</strong>：停止接收新邮件，列表里显示「已到期」。</p>`
+          + (expState.cleanup
+            ? '<p class="notice notice--err"><span class="mono">[!]</span><span>「到期后自动清理」已开启：这些邮箱及其全部邮件会在 1 分钟内被永久删除，无法恢复。</span></p>'
+            : '<p class="hint">「到期后自动清理」当前关闭，到期的邮箱不会被删除。</p>'),
+      }),
+      mailbox_auto_cleanup: () => ({
+        code: 'ENABLE CLEANUP', title: '开启到期后自动清理', danger: true, confirmText: '确认开启',
+        message: '<p>开启后，已到期的邮箱及其全部邮件会被<strong>永久删除</strong>，无法恢复。</p>'
+          + (expState.enabled
+            ? `<p class="notice notice--err"><span class="mono">[!]</span><span>过期机制已启用（有效时长 ${esc(human())}）：现在已到期的邮箱会在 1 分钟内被删除。</span></p>`
+            : '<p class="hint">过期机制当前关闭，此开关暂不生效；启用过期机制后才会开始清理。</p>'),
+      }),
+    };
+
     const offs = [
+      on(root, 'input', '#s-mailbox_ttl_minutes', (e, el) => {
+        const h = $('#ttl-human', root);
+        const n = Number.parseInt(el.value, 10);
+        if (h) h.textContent = n > 0 ? `= ${human(n)}。` : '';
+      }),
       on(root, 'click', '[data-save]', async (e, btn) => {
         const key = btn.dataset.save;
         const el = $('#s-' + key, root);
         const val = el.tagName === 'TEXTAREA' ? el.value : el.value.trim();
         if (SECRETS.has(key) && !val) { toast('Client Secret 留空，未修改', 'info'); return; }
+        let ttl = null;
+        if (key === 'mailbox_ttl_minutes') {
+          ttl = /^\d+$/.test(val) ? Number.parseInt(val, 10) : NaN;
+          if (!(ttl >= 1 && ttl <= 5256000)) { toast('有效时长必须是 1 到 5256000 之间的整数（分钟）', 'warn'); return; }
+          // 缩短有效时长会让更多邮箱立即到期；若同时开启了自动清理，它们会被永久删除。
+          if (expState.enabled && expState.cleanup && ttl < expState.ttl) {
+            const ok = await confirmPanel({
+              code: 'SHORTEN TTL', title: '缩短邮箱有效时长', danger: true, confirmText: '确认缩短',
+              message: `<p>有效时长将从 <strong>${esc(human())}</strong> 缩短为 <strong>${esc(human(ttl))}</strong>。</p><p class="notice notice--err"><span class="mono">[!]</span><span>「到期后自动清理」已开启：新增的到期邮箱及其全部邮件会在 1 分钟内被永久删除，无法恢复。</span></p>`,
+            });
+            if (!ok) return;
+          }
+        }
         btn.disabled = true;
         try {
           await api.admin.saveSettings({ [key]: val });
           toast('已保存', 'success');
           if (BRANDING.has(key)) { S.settings = { ...S.settings, [key]: val }; emit('branding'); }
           if (key === 'smtp_server_ip' || key === 'smtp_hostname') S.settings = { ...S.settings, [key]: val };
+          if (ttl !== null) { expState.ttl = ttl; S.settings = { ...S.settings, mailbox_ttl_minutes: ttl }; renderExpiryStatus(); }
           if (SECRETS.has(key)) el.value = '';
         } catch (err) { toast('保存失败：' + err.message, 'error'); }
         finally { btn.disabled = false; }
       }),
       on(root, 'change', '[data-toggle]', async (e, cb) => {
         const key = cb.dataset.toggle, enabled = cb.checked;
+        if (enabled && confirmEnable[key]) {
+          const ok = await confirmPanel(confirmEnable[key]());
+          if (!ok) { cb.checked = false; return; }
+        }
         try {
           await api.admin.saveSettings({ [key]: enabled ? 'true' : 'false' });
           toast(`${cb.dataset.label}已${enabled ? '开启' : '关闭'}`, 'success');
           S.settings = { ...S.settings, [key]: enabled };
+          if (key === 'mailbox_expiry_enabled') expState.enabled = enabled;
+          if (key === 'mailbox_auto_cleanup') expState.cleanup = enabled;
+          renderExpiryStatus();
         } catch (err) { toast('保存失败：' + err.message, 'error'); cb.checked = !enabled; }
       }),
       on(root, 'click', '#adm-key', (e, t) => t.classList.toggle('is-open')),

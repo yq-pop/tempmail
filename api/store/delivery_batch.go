@@ -30,8 +30,10 @@ type MessageDelivery struct {
 func (s *Store) DeliverMessage(ctx context.Context, delivery MessageDelivery) (DeliveredEmail, error) {
 	if validationErr := validateMessageDelivery(delivery); validationErr != nil {
 		var exists bool
+		// 已到期的邮箱按「不存在」处理，与正常投递路径一致，避免畸形邮件被反复重试。
 		if err := s.pool.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM mailboxes WHERE full_address = $1)`,
+			`WITH `+expiryPolicyCTE+`
+			 SELECT EXISTS (SELECT 1 FROM mailboxes m, policy p WHERE m.full_address = $1 AND `+mailboxAliveSQL+`)`,
 			strings.ToLower(delivery.Recipient),
 		).Scan(&exists); err != nil {
 			return DeliveredEmail{}, err
@@ -86,6 +88,7 @@ func (s *Store) DeliverMessageBatch(ctx context.Context, deliveries []MessageDel
 		receivedTimes[i] = delivery.ReceivedAt
 	}
 
+	// 已到期的邮箱不再收信（见 DeliverEmails 中的说明）。
 	rows, err := s.pool.Query(ctx, `
 		WITH input AS MATERIALIZED (
 			SELECT
@@ -106,13 +109,15 @@ func (s *Store) DeliverMessageBatch(ctx context.Context, deliveries []MessageDel
 				raw_message, size_bytes, received_at, ordinality
 			)
 		),
+		`+expiryPolicyCTE+`,
 		matched AS MATERIALIZED (
 			SELECT
 				i.*,
 				m.id AS mailbox_id,
 				gen_random_uuid() AS email_id
 			FROM input AS i
-			JOIN mailboxes AS m ON m.full_address = lower(i.recipient)
+			CROSS JOIN policy AS p
+			JOIN mailboxes AS m ON m.full_address = lower(i.recipient) AND `+mailboxAliveSQL+`
 		),
 		inserted AS (
 			INSERT INTO emails (

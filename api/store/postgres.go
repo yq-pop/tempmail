@@ -259,10 +259,11 @@ func (s *Store) ListAccounts(ctx context.Context, page, size int) ([]model.Accou
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT
+		`WITH `+expiryPolicyCTE+`
+		 SELECT
 			a.id, a.username, a.api_key, COALESCE(a.linuxdo_id, ''), a.is_admin, a.is_active, a.created_at, a.updated_at,
 			(SELECT COUNT(*)::BIGINT FROM mailboxes m WHERE m.account_id = a.id) AS mailbox_count,
-			(SELECT COUNT(*)::BIGINT FROM mailboxes m WHERE m.account_id = a.id AND m.expires_at > NOW()) AS active_mailbox_count,
+			(SELECT COUNT(*)::BIGINT FROM mailboxes m, policy p WHERE m.account_id = a.id AND `+mailboxAliveSQL+`) AS active_mailbox_count,
 			(SELECT COUNT(*)::BIGINT
 			 FROM emails e
 			 JOIN mailboxes m ON m.id = e.mailbox_id
@@ -567,9 +568,10 @@ func (s *Store) ToggleDomain(ctx context.Context, domainID int, active bool) err
 func (s *Store) GetStats(ctx context.Context) (*model.Stats, error) {
 	var st model.Stats
 	err := s.pool.QueryRow(ctx, `
+		WITH `+expiryPolicyCTE+`
 		SELECT
 		  (SELECT COUNT(*) FROM mailboxes)                         AS total_mailboxes,
-		  (SELECT COUNT(*) FROM mailboxes WHERE expires_at > NOW()) AS active_mailboxes,
+		  (SELECT COUNT(*) FROM mailboxes m, policy p WHERE `+mailboxAliveSQL+`) AS active_mailboxes,
 			  COALESCE((SELECT NULLIF(value, '')::BIGINT FROM app_settings WHERE key = 'total_emails_received'), (SELECT COUNT(*) FROM emails)) AS total_emails,
 		  (SELECT COUNT(*) FROM domains WHERE is_active = TRUE)    AS active_domains,
 		  (SELECT COUNT(*) FROM domains WHERE status = 'pending')  AS pending_domains,
@@ -590,22 +592,32 @@ func (s *Store) GetStats(ctx context.Context) (*model.Stats, error) {
 
 // ==================== Mailbox ====================
 
-func (s *Store) CreateMailbox(ctx context.Context, accountID uuid.UUID, address string, domainID int, fullAddress string, ttlMinutes int) (*model.Mailbox, error) {
-	if ttlMinutes <= 0 {
-		ttlMinutes = 30
-	}
-	expiresAt := time.Now().Add(time.Duration(ttlMinutes) * time.Minute)
+// CreateMailbox 创建邮箱。到期时间不在创建时写死，而是由后台的有效期配置动态计算：
+// 返回值里的 ExpiresAt 为 nil 表示当前未启用过期机制（永久有效）。
+// mailboxes.expires_at 列已弃用，仅为兼容旧版本而保留，由数据库默认值填充，不参与任何判断。
+func (s *Store) CreateMailbox(ctx context.Context, accountID uuid.UUID, address string, domainID int, fullAddress string) (*model.Mailbox, error) {
 	var m model.Mailbox
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO mailboxes (account_id, address, domain_id, full_address, expires_at)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, account_id, address, domain_id, full_address, created_at, expires_at`,
-		accountID, address, domainID, fullAddress, expiresAt,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt, &m.ExpiresAt)
+		`INSERT INTO mailboxes (account_id, address, domain_id, full_address)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id, account_id, address, domain_id, full_address, created_at`,
+		accountID, address, domainID, fullAddress,
+	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
+	policy, err := s.GetExpiryPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	policy.Apply(&m, time.Now())
 	return &m, nil
+}
+
+const mailboxColumns = `id, account_id, address, domain_id, full_address, created_at`
+
+func scanMailbox(row interface{ Scan(dest ...any) error }, m *model.Mailbox) error {
+	return row.Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt)
 }
 
 func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, size int) ([]model.Mailbox, int, error) {
@@ -617,7 +629,7 @@ func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, si
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, created_at, expires_at
+		`SELECT `+mailboxColumns+`
 		 FROM mailboxes WHERE account_id = $1
 		 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
 		accountID, size, (page-1)*size,
@@ -627,23 +639,45 @@ func (s *Store) ListMailboxes(ctx context.Context, accountID uuid.UUID, page, si
 	}
 	defer rows.Close()
 
-	mailboxes, err := pgx.CollectRows(rows, pgx.RowToStructByPos[model.Mailbox])
+	mailboxes := make([]model.Mailbox, 0, size)
+	for rows.Next() {
+		var m model.Mailbox
+		if err := scanMailbox(rows, &m); err != nil {
+			return nil, 0, err
+		}
+		mailboxes = append(mailboxes, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	policy, err := s.GetExpiryPolicy(ctx)
 	if err != nil {
 		return nil, 0, err
+	}
+	now := time.Now()
+	for i := range mailboxes {
+		policy.Apply(&mailboxes[i], now)
 	}
 	return mailboxes, total, nil
 }
 
+// GetMailbox 读取属于 accountID 的邮箱；邮箱不属于该账号时返回 pgx.ErrNoRows。
+// 所有「按邮箱读邮件」的用户接口都先经过它做归属校验。
 func (s *Store) GetMailbox(ctx context.Context, mailboxID uuid.UUID, accountID uuid.UUID) (*model.Mailbox, error) {
 	var m model.Mailbox
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, created_at, expires_at
-		 FROM mailboxes WHERE id = $1 AND account_id = $2`,
+	err := scanMailbox(s.pool.QueryRow(ctx,
+		`SELECT `+mailboxColumns+` FROM mailboxes WHERE id = $1 AND account_id = $2`,
 		mailboxID, accountID,
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt, &m.ExpiresAt)
+	), &m)
 	if err != nil {
 		return nil, err
 	}
+	policy, err := s.GetExpiryPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	policy.Apply(&m, time.Now())
 	return &m, nil
 }
 
@@ -661,24 +695,19 @@ func (s *Store) DeleteMailbox(ctx context.Context, mailboxID uuid.UUID, accountI
 
 func (s *Store) GetMailboxByFullAddress(ctx context.Context, fullAddress string) (*model.Mailbox, error) {
 	var m model.Mailbox
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, address, domain_id, full_address, created_at, expires_at
-		 FROM mailboxes WHERE full_address = $1`,
+	err := scanMailbox(s.pool.QueryRow(ctx,
+		`SELECT `+mailboxColumns+` FROM mailboxes WHERE full_address = $1`,
 		strings.ToLower(fullAddress),
-	).Scan(&m.ID, &m.AccountID, &m.Address, &m.DomainID, &m.FullAddress, &m.CreatedAt, &m.ExpiresAt)
+	), &m)
 	if err != nil {
 		return nil, err
 	}
-	return &m, nil
-}
-
-// DeleteExpiredMailboxes 刪除已过期的邮箱（及其所有邮件）
-func (s *Store) DeleteExpiredMailboxes(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM mailboxes WHERE expires_at < NOW()`)
+	policy, err := s.GetExpiryPolicy(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return tag.RowsAffected(), nil
+	policy.Apply(&m, time.Now())
+	return &m, nil
 }
 
 // NormalizeDomain 将用户输入规整为存储格式。
@@ -835,11 +864,14 @@ func (s *Store) DeliverEmails(ctx context.Context, recipients []string, sender, 
 		return []DeliveredEmail{}, nil
 	}
 
+	// 已到期的邮箱（仅在启用过期机制时存在）不再收信，按「未知收件人」丢弃；
+	// 这与是否开启自动清理无关：关闭自动清理只是不删除邮箱，邮箱依然是到期状态。
 	rows, err := s.pool.Query(ctx, `
 		WITH input AS MATERIALIZED (
 			SELECT recipient, ordinality::BIGINT AS ordinal
 			FROM unnest($1::TEXT[]) WITH ORDINALITY AS u(recipient, ordinality)
 		),
+		`+expiryPolicyCTE+`,
 		matched AS MATERIALIZED (
 			SELECT
 				i.ordinal,
@@ -847,7 +879,8 @@ func (s *Store) DeliverEmails(ctx context.Context, recipients []string, sender, 
 				m.id AS mailbox_id,
 				gen_random_uuid() AS email_id
 			FROM input AS i
-			JOIN mailboxes AS m ON m.full_address = lower(i.recipient)
+			CROSS JOIN policy AS p
+			JOIN mailboxes AS m ON m.full_address = lower(i.recipient) AND `+mailboxAliveSQL+`
 		),
 		inserted AS (
 			INSERT INTO emails (id, mailbox_id, sender, subject, body_text, body_html, raw_message, size_bytes)

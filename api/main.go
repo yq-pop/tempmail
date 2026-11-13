@@ -107,6 +107,7 @@ func main() {
 	domainH := handler.NewDomainHandler(db, cfg.SMTPServerIP, cfg.SMTPHostname)
 	mailboxH := handler.NewMailboxHandler(db)
 	emailH := handler.NewEmailHandler(db)
+	adminEmailH := handler.NewAdminEmailHandler(db)
 	settingH := handler.NewSettingHandler(db)
 	registerH := handler.NewRegisterHandler(db)
 	statsH := handler.NewStatsHandler(db)
@@ -140,10 +141,13 @@ func main() {
 
 		// 域名池：仅管理员可查看、添加、提交（权限规则见 routes.go）
 		registerDomainRoutes(api, domainH)
+		// 管理后台「全部邮件」：跨用户查询邮件，仅管理员（权限规则见 routes.go）
+		registerAdminEmailRoutes(api, adminEmailH)
 
 		// 邮箱管理
 		api.POST("/mailboxes", mailboxH.Create)
 		api.GET("/mailboxes", mailboxH.List)
+		api.GET("/mailboxes/:id", mailboxH.Get)
 		api.DELETE("/mailboxes/:id", mailboxH.Delete)
 
 		// 邮件管理
@@ -227,7 +231,7 @@ func main() {
 			}
 			if !delivery.Delivered {
 				// 邮箱不存在，静默丢弃。
-				c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "unknown recipient"})
+				c.JSON(http.StatusOK, gin.H{"status": "discarded", "reason": "unknown or expired recipient"})
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"status": "delivered", "email_id": delivery.EmailID})
@@ -262,7 +266,7 @@ func main() {
 			results := make([]gin.H, 0, len(deliveries))
 			for _, delivery := range deliveries {
 				if !delivery.Delivered {
-					results = append(results, gin.H{"recipient": delivery.Recipient, "status": "discarded", "reason": "unknown recipient"})
+					results = append(results, gin.H{"recipient": delivery.Recipient, "status": "discarded", "reason": "unknown or expired recipient"})
 					continue
 				}
 				results = append(results, gin.H{"recipient": delivery.Recipient, "status": "delivered", "email_id": delivery.EmailID})
@@ -271,13 +275,17 @@ func main() {
 		})
 	}
 
-	// ==================== 邮箱自动过期清理 ====================
+	// ==================== 邮箱到期自动清理 ====================
+	// 是否清理、何时算到期完全由后台设置决定（见 store/expiry.go）：
+	//   - 未启用过期机制：邮箱永久有效，什么都不删；
+	//   - 启用过期机制、关闭自动清理：邮箱到期后失效（停止收信），但不会被删除；
+	//   - 两者都开启：按配置的有效时长删除已到期的邮箱及其邮件。
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
-		log.Println("[OK] Mailbox expiry cleaner started (TTL=30min, interval=1min)")
+		log.Println("[OK] Mailbox expiry cleaner started (interval=1min, follows admin settings)")
 		for range ticker.C {
-			if deleted, err := db.DeleteExpiredMailboxes(context.Background()); err != nil {
+			if deleted, err := db.CleanupExpiredMailboxes(context.Background()); err != nil {
 				log.Printf("[cleaner] error: %v", err)
 			} else if deleted > 0 {
 				log.Printf("[cleaner] deleted %d expired mailboxes", deleted)

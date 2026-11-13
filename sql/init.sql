@@ -69,8 +69,11 @@ CREATE UNIQUE INDEX idx_mailboxes_full_address ON mailboxes (full_address);
 -- 按账号查邮箱列表
 CREATE INDEX idx_mailboxes_account_id ON mailboxes (account_id);
 
--- 过期自动清理索引
-CREATE INDEX idx_mailboxes_expires_at ON mailboxes (expires_at);
+-- 邮箱到期时间不再落库：由后台的邮箱有效期配置动态计算（created_at + 有效时长），
+-- 清理与到期判定都按 created_at 进行，因此在 created_at 上建索引。
+-- expires_at 列已弃用，仅为兼容旧版本而保留，不参与任何判断。
+CREATE INDEX idx_mailboxes_created_at ON mailboxes (created_at);
+COMMENT ON COLUMN mailboxes.expires_at IS '已弃用：邮箱有效期现在按后台配置动态计算（created_at + 有效时长），此列不再参与任何判断';
 
 -- ============================================================
 -- 4. 邮件表 (emails)
@@ -89,6 +92,9 @@ CREATE TABLE emails (
 
 -- 按邮箱查邮件（分页查询热路径）
 CREATE INDEX idx_emails_mailbox_received ON emails (mailbox_id, received_at DESC);
+
+-- 管理后台「全部邮件」按接收时间跨用户排序
+CREATE INDEX idx_emails_received_at ON emails (received_at DESC);
 
 -- ============================================================
 -- 5. 初始管理员账号
@@ -121,7 +127,10 @@ INSERT INTO app_settings (key, value) VALUES ('github_client_secret', '') ON CON
 INSERT INTO app_settings (key, value) VALUES ('github_redirect_url', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('smtp_server_ip', '') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('smtp_hostname', '') ON CONFLICT DO NOTHING;
+-- 邮箱有效期：默认关闭过期机制，邮箱永久有效；三项设置相互独立。
+INSERT INTO app_settings (key, value) VALUES ('mailbox_expiry_enabled', 'false') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('mailbox_ttl_minutes', '30') ON CONFLICT DO NOTHING;
+INSERT INTO app_settings (key, value) VALUES ('mailbox_auto_cleanup', 'false') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('total_emails_received', '0') ON CONFLICT DO NOTHING;
 INSERT INTO app_settings (key, value) VALUES ('site_logo_url', '') ON CONFLICT DO NOTHING;
 

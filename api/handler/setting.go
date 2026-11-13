@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"tempmail/store"
 
@@ -39,7 +40,15 @@ func (h *SettingHandler) GetPublic(c *gin.Context) {
 	if err != nil {
 		gitHubLogin = "false"
 	}
+	// 邮箱有效期配置：落地页据此说明邮箱寿命。每个邮箱自己的到期时间以邮箱接口返回的 expires_at 为准。
+	policy, err := h.store.GetExpiryPolicy(c.Request.Context())
+	if err != nil {
+		policy = store.ParseExpiryPolicy(nil)
+	}
 	c.JSON(http.StatusOK, gin.H{
+		"mailbox_expiry_enabled": policy.Enabled,
+		"mailbox_ttl_minutes":    policy.TTLMinutes,
+		"mailbox_auto_cleanup":   policy.AutoCleanup,
 		"registration_open":     regOpen == "true",
 		"key_login_enabled":     keyLogin != "false",
 		"linuxdo_login_enabled": linuxDOLogin == "true",
@@ -71,6 +80,12 @@ func (h *SettingHandler) AdminGetAll(c *gin.Context) {
 	} else {
 		settings["github_client_secret_set"] = "false"
 	}
+	// 邮箱有效期三项设置始终返回当前生效值（缺失时为默认：过期机制关闭、自动清理关闭、30 分钟），
+	// 这样后台页面看到的就是后端实际采用的配置。
+	policy := store.ParseExpiryPolicy(settings)
+	settings[store.SettingMailboxExpiryEnabled] = strconv.FormatBool(policy.Enabled)
+	settings[store.SettingMailboxAutoCleanup] = strconv.FormatBool(policy.AutoCleanup)
+	settings[store.SettingMailboxTTLMinutes] = strconv.Itoa(policy.TTLMinutes)
 	c.JSON(http.StatusOK, settings)
 }
 
@@ -93,7 +108,9 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"site_logo_url":          true,
 		"announcement":           true,
 		"default_domain":         true,
-		"mailbox_ttl_minutes":    true,
+		"mailbox_expiry_enabled": true, // 是否启用邮箱过期机制（默认关闭，邮箱永久有效）
+		"mailbox_ttl_minutes":    true, // 邮箱有效时长（分钟），仅在启用过期机制时生效
+		"mailbox_auto_cleanup":   true, // 邮箱到期后是否自动清理（独立于过期机制开关）
 		"key_login_enabled":      true,
 		"linuxdo_login_enabled":  true,
 		"linuxdo_client_id":      true,
@@ -105,11 +122,19 @@ func (h *SettingHandler) AdminUpdate(c *gin.Context) {
 		"github_redirect_url":    true,
 	}
 
+	// 先整体校验再保存：任何一项不合法都不会保存其他项，避免出现只保存了一半的配置。
 	for k, v := range req {
 		if !allowed[k] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown setting key: " + k})
 			return
 		}
+		if err := store.ValidateSetting(k, v); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	for k, v := range req {
 		if (k == "linuxdo_client_secret" || k == "github_client_secret") && v == "" {
 			continue
 		}
