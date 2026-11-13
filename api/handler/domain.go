@@ -8,15 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"tempmail/middleware"
 	"tempmail/store"
 
 	"github.com/gin-gonic/gin"
 )
-
-// maxPendingDomains 限制“用户自助提交”造成的待验证队列长度。
-// 待验证域名由后台每 30 秒串行做 DNS 查询，队列无限增长会拖垮验证循环。
-const maxPendingDomains = 200
 
 type DomainHandler struct {
 	store       *store.Store
@@ -116,10 +111,8 @@ func (h *DomainHandler) Add(c *gin.Context) {
 	})
 }
 
-// GET /api/domains - 列出所有域名（共享域名池）
+// GET /api/domains - 列出所有域名（仅管理员）
 func (h *DomainHandler) List(c *gin.Context) {
-	_ = middleware.GetAccount(c) // 确保已认证
-
 	domains, err := h.store.ListDomains(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -240,12 +233,11 @@ func (h *DomainHandler) MXImport(c *gin.Context) {
 // POST /api/admin/domains/mx-register - 提交域名等待自动MX验证（无需手动确认）
 // body: {"domain":"example.com"}
 func (h *DomainHandler) MXRegister(c *gin.Context) {
-	h.register(c, false)
+	h.register(c)
 }
 
-// register 是 MXRegister 与 Submit 的共用实现。
-// limitPending 为 true（普通用户自助提交）时，待验证队列已满会拒绝新的提交；管理员入口不受限。
-func (h *DomainHandler) register(c *gin.Context, limitPending bool) {
+// register 是 MXRegister 与 Submit 的共用实现。两个入口都只对管理员开放（见 main.go / routes.go）。
+func (h *DomainHandler) register(c *gin.Context) {
 	var req struct {
 		Domain string `json:"domain" binding:"required"`
 	}
@@ -302,18 +294,6 @@ func (h *DomainHandler) register(c *gin.Context, limitPending bool) {
 	}
 
 	// MX未通过 → 加入 pending，等待后台自动轮询
-	if limitPending {
-		pending, err := h.store.CountPendingDomains(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if pending >= maxPendingDomains {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "待验证域名队列已满，请稍后再试，或联系管理员直接添加"})
-			return
-		}
-	}
-
 	domain, err := h.store.AddDomainPending(c.Request.Context(), req.Domain)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -331,10 +311,10 @@ func (h *DomainHandler) register(c *gin.Context, limitPending bool) {
 	})
 }
 
-// POST /api/domains/submit — 任意已登录用户提交域名进行 MX 自动验证
-// 与 MXRegister 逻辑相同，但不需要管理员权限
+// POST /api/domains/submit — 提交域名进行 MX 自动验证（仅管理员）
+// 与 /api/admin/domains/mx-register 逻辑相同，保留此路径是为了兼容管理员的旧脚本。
 func (h *DomainHandler) Submit(c *gin.Context) {
-	h.register(c, true) // 与管理员入口共用逻辑，但额外限制待验证队列长度
+	h.register(c)
 }
 
 // GET /api/admin/domains/:id/status - 查询域名状态（用于前端轮询）

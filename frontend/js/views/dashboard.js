@@ -34,7 +34,8 @@ export default {
     try {
       [mailboxes, domains, st, pub] = await Promise.all([
         api.listMailboxes(),
-        api.domains(),
+        // 域名池只对管理员开放：普通用户不请求（后端也会返回 403）
+        admin ? api.domains() : Promise.resolve([]),
         api.stats().catch(() => ({})),
         api.publicSettings().catch(() => ({})),
       ]);
@@ -50,7 +51,7 @@ export default {
     const pending = (domains || []).filter((d) => d.status === 'pending').length;
     const cells = [
       { l: '我的邮箱', v: S.mailboxes.length, n: '当前有效' },
-      { l: '可用域名', v: activeDomains.length, n: `共 ${(domains || []).length} 个` },
+      ...(admin ? [{ l: '可用域名', v: activeDomains.length, n: `共 ${(domains || []).length} 个` }] : []),
       { l: '收到邮件', v: st.total_emails ?? '—', n: '全平台累计' },
       { l: '邮箱总量', v: st.total_mailboxes ?? '—', n: `活跃 ${st.active_mailboxes ?? '—'} 个` },
       ...(admin ? [
@@ -66,7 +67,7 @@ export default {
       <div class="readout" data-reveal data-xray="READOUT">
         ${cells.map((c) => `<div class="cell"><span class="mono dim">${esc(c.l)}</span><span class="cell-v" ${typeof c.v === 'number' ? `data-n="${c.v}"` : ''}>${typeof c.v === 'number' ? 0 : esc(c.v)}</span><span class="mono dim">${esc(c.n)}</span></div>`).join('')}
       </div>
-      ${pending > 0 ? `<div class="notice mt-s"><span class="mono">[SCAN]</span><span>有 ${pending} 个域名正在 MX 验证中，通过后将自动加入域名池。<a href="#/domains" class="sig" data-cursor="查看">查看进度 ▸</a></span></div>` : ''}
+      ${admin && pending > 0 ? `<div class="notice mt-s"><span class="mono">[SCAN]</span><span>有 ${pending} 个域名正在 MX 验证中，通过后将自动加入域名池。<a href="#/admin/domains" class="sig" data-cursor="查看">查看进度 ▸</a></span></div>` : ''}
       <div class="string" data-l="IDX" data-r="NEW" aria-hidden="true"></div>
       <div class="g12" style="row-gap:var(--gut)">
         <div class="col" style="${col(1, 8)}" data-xray="INDEX">
@@ -155,29 +156,34 @@ export default {
       const suffix = single && wild ? '（单域名/通配）' : wild ? '（通配）' : '（单域名）';
       return `<option value="${esc(d.id)}" data-single="${single ? 1 : 0}" data-wild="${wild ? 1 : 0}" data-base="${esc(label)}">${esc(label)}${suffix}</option>`;
     }).join('');
+    // 字段编号按实际显示的字段顺延，普通用户没有「域名」字段时不会出现编号断档
+    let fieldNo = 0;
+    const fno = () => `FIELD ${String(++fieldNo).padStart(2, '0')}`;
     form.innerHTML = `
-      <div class="field"><label for="mb-address"><b>FIELD 01</b><span>本地部分 · @ 之前</span></label>
+      <div class="field"><label for="mb-address"><b>${fno()}</b><span>本地部分 · @ 之前</span></label>
         <input class="input" id="mb-address" placeholder="留空则随机生成" autocomplete="off" spellcheck="false" />
         <p class="hint">只允许字母、数字、连字符、下划线</p></div>
-      <div class="field"><label for="mb-domain"><b>FIELD 02</b><span>域名</span></label>
+      ${admin ? `<div class="field"><label for="mb-domain"><b>${fno()}</b><span>域名</span></label>
         <select class="select" id="mb-domain"><option value="">随机选取</option>${opts}</select>
-        <p class="hint">系统会按该域名当前可用的 MX 能力创建邮箱。</p></div>
-      <div class="field" id="mb-mode-group" hidden><label><b>FIELD 03</b><span>生成模式</span></label>
+        <p class="hint">系统会按该域名当前可用的 MX 能力创建邮箱。</p></div>` : ''}
+      <div class="field" id="mb-mode-group" hidden><label><b>${fno()}</b><span>生成模式</span></label>
         <div class="seg" role="radiogroup">
           <label id="mb-single-wrap"><input type="radio" name="mb-mode" value="single" checked /><span>单域名</span></label>
           <label id="mb-multi-wrap"><input type="radio" name="mb-mode" value="multi" /><span>随机多级</span></label>
         </div>
         <p class="hint" id="mb-mode-hint"></p></div>
-      <div class="field" id="mb-sub-group" hidden><label for="mb-subdomain"><b>FIELD 04</b><span>自定义多级子域</span></label>
+      <div class="field" id="mb-sub-group" hidden><label for="mb-subdomain"><b>${fno()}</b><span>自定义多级子域</span></label>
         <div class="affix"><input class="input" id="mb-subdomain" placeholder="留空则随机，如 gmail.outlook" autocomplete="off" spellcheck="false" /><span id="mb-sub-suffix"></span></div>
         <p class="hint">只允许字母、数字、连字符和点，每段不能以连字符开头或结尾。</p></div>
       <button type="submit" class="btn btn--solid btn--block" id="mb-submit" data-cursor="创建">创建邮箱 ▸</button>
-      ${activeDomains.length === 0 ? '<p class="notice notice--err mt-s"><span class="mono">[!]</span><span>域名池为空，暂时无法创建。请先到「域名」页提交域名。</span></p>' : ''}`;
+      ${admin && activeDomains.length === 0 ? '<p class="notice notice--err mt-s"><span class="mono">[!]</span><span>域名池为空，暂时无法创建。请先到<a href="#/admin/domains" class="sig">「域名管理」</a>添加域名。</span></p>' : ''}`;
 
+    // 普通用户没有域名选择框（sel 为 null）：一律由服务端从域名池随机分配
     const sel = $('#mb-domain', form), modeGroup = $('#mb-mode-group', form), subGroup = $('#mb-sub-group', form);
+    const selectedOpt = () => (sel ? sel.options[sel.selectedIndex] : null);
     const modeOf = () => form.querySelector('input[name="mb-mode"]:checked')?.value || 'single';
     function syncMode() {
-      const opt = sel.options[sel.selectedIndex];
+      const opt = selectedOpt();
       const base = opt?.dataset?.base || '';
       const canSingle = !opt || !opt.value || opt.dataset.single === '1';
       const canWild = !opt || !opt.value || opt.dataset.wild === '1';
@@ -199,12 +205,12 @@ export default {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = $('#mb-submit', form);
-      const opt = sel.options[sel.selectedIndex];
+      const opt = selectedOpt();
       const canWild = !opt || !opt.value || opt.dataset.wild === '1';
       const mode = modeOf();
       const address = $('#mb-address', form).value.trim();
       const subdomain = $('#mb-subdomain', form).value.trim();
-      const domainID = Number(sel.value || 0);
+      const domainID = Number(sel?.value || 0);
       const body = { mode };
       if (address) body.address = address;
       if (domainID) body.domain_id = domainID;
@@ -215,7 +221,11 @@ export default {
         toast(`已创建：${mb.full_address}`, 'success');
         $('#mb-address', form).value = '';
         await reload(mb.id);
-      } catch (err) { toast('创建失败：' + err.message, 'error'); }
+      } catch (err) {
+        // 服务端没有可用域名时返回英文提示；普通用户看不到域名池，引导他们联系管理员
+        const noDomain = /no active .* domains available/i.test(err.message);
+        toast('创建失败：' + (noDomain && !admin ? '暂无可用域名，请联系管理员添加' : err.message), 'error');
+      }
       finally { btn.disabled = false; }
     });
 

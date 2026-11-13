@@ -69,7 +69,7 @@ export default {
       <div class="col stack" style="${col(8, 5)};--gap:var(--gut);margin-top:clamp(0px,5vw,72px)">
         ${frame({ sub: '邮件服务', code: 'SET-MAIL', xray: 'MAIL' }, `
           ${field({ key: 'smtp_server_ip', label: 'SMTP 服务器公网 IP', value: smtpIp, hint: '用于生成 SPF DNS 配置提示', placeholder: '0.0.0.0' })}
-          ${field({ key: 'smtp_hostname', label: '邮件服务器主机名', value: smtpHost, hint: '用作 MX 记录目标（如 mail.yourdomain.com）。设置后用户添加域名只需一条 MX 记录，无需额外 A 记录。', placeholder: 'mail.yourdomain.com' })}
+          ${field({ key: 'smtp_hostname', label: '邮件服务器主机名', value: smtpHost, hint: '用作 MX 记录目标（如 mail.yourdomain.com）。设置后添加域名只需一条 MX 记录，无需额外 A 记录。', placeholder: 'mail.yourdomain.com' })}
           ${field({ key: 'default_domain', label: '默认邮箱域名', value: s.default_domain || '', hint: '创建邮箱时下拉框优先选中的域名', placeholder: 'mail.example.com' })}
           ${field({ key: 'mailbox_ttl_minutes', label: '邮箱有效期（分钟）', value: s.mailbox_ttl_minutes || '30', hint: '新建邮箱的默认存活时间，0 = 永不过期', placeholder: '30' })}
           ${field({ key: 'max_mailboxes_per_user', label: '每账户邮箱上限', value: s.max_mailboxes_per_user || '5', hint: '每个账户同时存在的邮箱数量上限', placeholder: '5' })}`)}

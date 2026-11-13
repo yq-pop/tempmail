@@ -31,8 +31,6 @@ const (
 	keyLoginRateWindow = 600
 	registerRateLimit  = 10
 	registerRateWindow = 3600
-	domainSubmitLimit  = 20
-	domainSubmitWindow = 3600
 	adminKeyLookupHint = "管理员 Key 可在数据库中查询：docker compose exec postgres psql -U tempmail -d tempmail -c \"SELECT api_key FROM accounts WHERE is_admin ORDER BY created_at LIMIT 1\""
 )
 
@@ -138,12 +136,10 @@ func main() {
 		// 当前用户
 		api.GET("/me", accountH.Me)
 
-		// 域名池（所有用户可查看）
-		api.GET("/domains", domainH.List)
-		api.GET("/domains/:id/status", domainH.GetStatus) // 任意用户可轮询域名状态
 		api.GET("/stats", statsH.Get)
-		// 任意已登录用户可提交域名进行 MX 自动验证
-		api.POST("/domains/submit", middleware.AccountRateLimit(rdb, "domain-submit", domainSubmitLimit, domainSubmitWindow), domainH.Submit)
+
+		// 域名池：仅管理员可查看、添加、提交（权限规则见 routes.go）
+		registerDomainRoutes(api, domainH)
 
 		// 邮箱管理
 		api.POST("/mailboxes", mailboxH.Create)

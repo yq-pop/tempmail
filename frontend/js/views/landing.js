@@ -43,7 +43,7 @@ export default {
       <section id="principle">
         <div class="sec-title"><span class="mono dim">[02]</span><h2 class="display-m" data-skew data-reveal="mask"><span class="line"><span>Principle <em class="serif">原理</em></span></span></h2></div>
         <div class="principle g12">
-          <article class="col step-card" data-reveal style="${col(1, 5)}"><div class="big">01</div><h3>分配</h3><p>一键生成随机地址，或指定本地部分与域名。支持单级域名，也支持通配 MX 下的随机多级子域。</p></article>
+          <article class="col step-card" data-reveal style="${col(1, 5)}"><div class="big">01</div><h3>分配</h3><p>一键生成随机地址，或指定本地部分。域名由系统从域名池中分配，支持单级域名，也支持通配 MX 下的随机多级子域。</p></article>
           <article class="col step-card off-1" data-reveal style="${col(7, 5)}"><div class="big">02</div><h3>接收</h3><p>Postfix 只收不发，经 LMTP 直接入库。收件箱每 8 秒自动校准，新邮件即时标记。</p></article>
           <article class="col step-card" data-reveal style="${col(3, 6)}"><div class="big">03</div><h3>销毁</h3><p>邮箱到期自动清除，邮件随之销毁；也可以随时手动删除。HTML 邮件在沙箱中渲染，脚本不会执行。</p></article>
         </div>

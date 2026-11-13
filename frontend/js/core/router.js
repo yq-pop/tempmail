@@ -1,4 +1,4 @@
-// 哈希路由：#/  #/mailbox/:id[/:eid]  #/domains  #/api  #/key  #/admin/*
+// 哈希路由：#/  #/mailbox/:id[/:eid]  #/api  #/key  #/admin/*（域名只在 #/admin/domains，仅管理员）
 import { $ } from 'core/util';
 import { S, isAuthed, isAdmin, emit } from 'core/state';
 import { toast, numberFrames, closePanel } from 'core/ui';

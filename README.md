@@ -1,6 +1,6 @@
 # TempMail
 
-一个自托管临时邮件服务平台，支持多域名、用户自助提交域名、MX 自动验证与自动禁用、API Key 鉴权及 Web 管理后台。
+一个自托管临时邮件服务平台，支持多域名、管理员维护域名池、MX 自动验证与自动禁用、API Key 鉴权及 Web 管理后台。
 部署教程可看https://linux.do/t/topic/1667604
 ---
 
@@ -9,7 +9,7 @@
 | 功能 | 说明 |
 |------|------|
 | 邮箱管理 | 按需创建临时邮箱，可配置 TTL（默认 30 分钟），自动清理 |
-| 多域名池 | 多个域名轮流供用户创建邮箱，管理员或普通用户均可提交新域名 |
+| 多域名池 | 多个域名轮流供用户创建邮箱；域名只能由管理员在后台添加，普通用户看不到域名列表，也无法提交域名 |
 | MX 自动验证 | 提交域名后后台每 30 秒轮询 MX 记录，通过即自动激活，无需管理员确认 |
 | 域名健康监控 | 每 6 小时重检已激活域名，MX 失效自动暂停（`status=disabled`）|
 | IP / Hostname 分离 | 服务器 IP 与邮件主机名通过环境变量或后台设置注入，不写入代码 |
@@ -18,7 +18,7 @@
 | 管理后台 | Web GUI 管理账户、域名、邮件、系统配置（含 SMTP Hostname）|
 | Dashboard 统计 | 实时展示邮箱数、邮件数、域名数、账户数 |
 | 公告系统 | 管理员可设置公告，用户登录后显示 |
-| 速率限制 | Redis 固定窗口，按账号计数，默认 500 请求/60 秒；登录、注册、域名提交另有更严格的按 IP/账号限制 |
+| 速率限制 | Redis 固定窗口，按账号计数，默认 500 请求/60 秒；登录、注册另有更严格的按 IP 限制 |
 | 连接池 | PgBouncer 事务模式，支持 2000 并发客户端 |
 
 ---
@@ -78,7 +78,7 @@ docker compose exec postgres psql -U tempmail -d tempmail \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `SMTP_SERVER_IP` | *(必填)* | 服务器公网 IP，用于 MX 验证与 SPF 生成 |
-| `SMTP_HOSTNAME` | *(推荐填写)* | 邮件服务器主机名，如 `mail.yourdomain.com`。设置后用户添加域名只需一条 MX 记录，无需 A 记录 |
+| `SMTP_HOSTNAME` | *(推荐填写)* | 邮件服务器主机名，如 `mail.yourdomain.com`。设置后管理员添加域名只需一条 MX 记录，无需 A 记录 |
 | `API_DB_DSN` | `postgres://tempmail:...@pgbouncer:6432/tempmail` | API 数据库连接串（经 PgBouncer）|
 | `API_REDIS_ADDR` | `redis:6379` | Redis 连接地址 |
 | `API_PORT` | `8080` | API 监听端口 |
@@ -143,19 +143,19 @@ go run ./cmd/smtpbench \
 
 ## 添加邮件域名
 
-任意已登录用户均可提交域名，管理员可在后台直接添加。
+**域名只能由管理员添加。** 普通用户看不到域名列表，没有任何添加或提交入口；后端接口同样限制为管理员，直接调用会返回 `403`（见下文「域名权限」）。
 
-### 方式一：用户自助提交（推荐）
+### 方式一：MX 自动注册（推荐）
 
-1. 登录后进入「域名列表」→「提交域名」
+1. 用管理员账号登录，进入「域名管理」，在右侧「域名接入控制台」选择「MX 自动注册」
 2. 填写域名，系统会展示所需 DNS 记录
 3. 在 DNS 面板完成配置后提交：
    - **MX 已生效** → 立即激活加入域名池
    - **MX 未生效** → 进入待验证队列，后台每 30 秒自动重试，通过后自动激活
 
-### 方式二：管理员直接添加
+### 方式二：手动添加
 
-登录管理后台 → 域名管理 → 手动添加（跳过 MX 检测，立即激活）。
+登录管理后台 → 域名管理 → 「手动添加」（可跳过 MX 检测，立即激活）。
 
 ### 所需 DNS 记录
 
@@ -224,9 +224,6 @@ Authorization: Bearer tm_xxxxxxxxxxxx
 BASE="http://<服务器IP>"
 KEY="your_api_key"
 
-# 获取可用域名（无需登录）
-curl "$BASE/public/domains"
-
 # 获取公开设置（无需登录）
 curl "$BASE/public/settings"
 
@@ -254,7 +251,8 @@ curl "$BASE/api/mailboxes" -H "Authorization: Bearer $KEY"
 # 读取邮件
 curl "$BASE/api/mailboxes/<mailbox-id>/emails" -H "Authorization: Bearer $KEY"
 
-# 提交域名（任意登录用户）
+# 以下域名接口仅管理员可用（$KEY 必须是管理员 Key），普通用户调用会返回 403
+# 提交域名
 curl -X POST "$BASE/api/domains/submit" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
@@ -265,6 +263,9 @@ curl -X POST "$BASE/api/domains/submit" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"domain":"*.example.com"}'
+
+# 列出域名池
+curl "$BASE/api/domains" -H "Authorization: Bearer $KEY"
 
 # 查询域名验证状态
 curl "$BASE/api/domains/<domain-id>/status" -H "Authorization: Bearer $KEY"
@@ -296,14 +297,19 @@ X-RateLimit-Reset: 1735000000
 ### 速率限制
 
 - `/api/*`：按账号计数的固定窗口。旧版本每个请求都会重置过期时间，持续使用（例如收件箱每 8 秒轮询）会被累计封禁直到停止请求一个窗口，已修复。
-- 公开接口按来源 IP 限制：整体 600 次/分钟；`POST /public/key-login` 30 次/10 分钟；`POST /public/register` 10 次/小时。`POST /api/domains/submit` 每账号 20 次/小时。
+- 公开接口按来源 IP 限制：整体 600 次/分钟；`POST /public/key-login` 30 次/10 分钟；`POST /public/register` 10 次/小时。
 - 这些额度是 `api/main.go` 中的常量。Redis 故障时放行（fail-open）。
 - 来源 IP 取自 Nginx 写入的 `X-Forwarded-For`，API 只信任内网代理转发的该头。如果 Nginx 前面还有 CDN 或其他反向代理，需要在 Nginx 中配置 `real_ip`（`set_real_ip_from` + `real_ip_header`），否则所有用户会共用同一个 IP 的额度。
 
+### 域名权限
+
+- 域名池只由管理员维护：普通用户看不到域名列表，也不能添加或提交域名，前端没有对应入口（导航里没有「域名」，旧的 `#/domains` 地址会回到首页）。
+- 后端同样强制限制，不依赖前端隐藏入口：`GET /api/domains`、`GET /api/domains/:id/status`、`POST /api/domains/submit` 以及全部 `/api/admin/*` 都要求管理员，普通用户直接调用返回 `403`，未携带密钥返回 `401`。权限规则在 `api/routes.go`，并有单元测试覆盖。
+- 普通用户创建邮箱时不需要选择域名，由服务端从域名池中随机分配；已知域名时仍可通过 `domain` / `domain_id` 参数指定。
+
 ### 域名提交
 
-- 管理员和用户提交的域名都会校验格式：至少两级、每段为合法主机名、拒绝 IP 地址；国际化域名请使用 punycode（`xn--`）。
-- 用户自助提交的待验证队列上限为 200 条，满后返回 429；管理员入口不受限。
+- 管理员提交的域名会校验格式：至少两级、每段为合法主机名、拒绝 IP 地址；国际化域名请使用 punycode（`xn--`）。
 
 ### 日志
 
@@ -394,7 +400,7 @@ tempmail/
 │       ├── main.js       # 入口：表头、路由表、会话恢复、校准开场
 │       ├── core/         # util / state / api / ui / router
 │       ├── fx/           # 着色器、光标、惯性滚动、磁吸按钮、乱码解码、X-Ray 等视觉与交互
-│       └── views/        # 落地页、仪表盘、收件箱、域名、API 文档、密钥、管理后台
+│       └── views/        # 落地页、仪表盘、收件箱、API 文档、密钥、管理后台（账户 / 域名管理 / 设置）
 ├── nginx/                # Nginx 反向代理配置
 ├── postfix/              # Postfix 邮件接收
 ├── pgbouncer/            # PgBouncer 连接池配置

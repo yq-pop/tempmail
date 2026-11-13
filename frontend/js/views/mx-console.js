@@ -1,6 +1,6 @@
-// 域名提交控制台（用户页与管理页共用）
-//  · mountSubmitConsole：任意登录用户提交域名 → 即时 MX 检测 → 激活或进入 30s 轮询队列
-//  · mountManualConsole：管理员手动添加 → MX 检测 → 失败时可「强制添加」
+// 域名接入控制台（仅「域名管理」页使用；域名池只对管理员开放，后端接口同样限制为管理员）
+//  · mountSubmitConsole：提交域名 → 即时 MX 检测 → 激活或进入 30s 轮询队列
+//  · mountManualConsole：手动添加 → MX 检测 → 失败时可「强制添加」
 import { $, esc, on, timeAgo } from 'core/util';
 import { S } from 'core/state';
 import { api, dnsRecordsFor } from 'core/api';

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -45,11 +44,4 @@ func isAllDigits(s string) bool {
 		}
 	}
 	return s != ""
-}
-
-// CountPendingDomains 返回待验证域名数量，用于限制自助提交造成的轮询队列膨胀。
-func (s *Store) CountPendingDomains(ctx context.Context) (int, error) {
-	var n int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM domains WHERE status = 'pending'`).Scan(&n)
-	return n, err
 }

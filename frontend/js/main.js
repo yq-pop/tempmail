@@ -27,10 +27,10 @@ function navItems() {
   }
   const list = [
     { href: '#/', no: '01', label: '邮箱', match: (p) => p === '/' || p.startsWith('/mailbox') },
-    { href: '#/domains', no: '02', label: '域名', match: (p) => p === '/domains' },
-    { href: '#/api', no: '03', label: '接口', match: (p) => p === '/api' },
-    { href: '#/key', no: '04', label: '密钥', match: (p) => p === '/key' },
+    { href: '#/api', no: '02', label: '接口', match: (p) => p === '/api' },
+    { href: '#/key', no: '03', label: '密钥', match: (p) => p === '/key' },
   ];
+  // 域名池只由管理员维护，普通用户没有任何域名入口；管理员通过「域名管理」添加和查看。
   if (isAdmin()) {
     list.push({ sep: true });
     list.push({ href: '#/admin/accounts', no: 'A1', label: '账户', match: (p) => p === '/admin/accounts' });
@@ -96,7 +96,6 @@ defineRoutes([
   ['/', { view: () => import('views/landing'), authed: () => import('views/dashboard') }],
   ['/mailbox/:id', { auth: true, view: () => import('views/inbox') }],
   ['/mailbox/:id/:eid', { auth: true, view: () => import('views/inbox') }],
-  ['/domains', { auth: true, view: () => import('views/domains') }],
   ['/api', { auth: true, view: () => import('views/apidocs') }],
   ['/key', { auth: true, view: () => import('views/key') }],
   ['/admin/accounts', { auth: true, admin: true, view: () => import('views/admin-accounts') }],
